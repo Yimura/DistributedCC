@@ -23,6 +23,9 @@ dev = [
 distributedcc-server = "distributedcc.server:main"
 distributedcc-bridge = "distributedcc.bridge:main"
 
+[tool.hatch.build.targets.wheel]
+packages = ["src/distributedcc"]
+
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]

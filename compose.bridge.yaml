@@ -1,0 +1,17 @@
+services:
+  bridge:
+    build: .
+    command: distributedcc-bridge
+    pid: host
+    user: "${DCC_UID:?Set host user ID}:${DCC_GID:?Set host group ID}"
+    environment:
+      HOME: /home/dcc
+      DCC_SERVER_URL: ${DCC_SERVER_URL:?Set wss broker URL}
+      DCC_TOKEN: ${DCC_TOKEN:?Set this laptop token}
+      DCC_PUBLISH_SESSIONS: ${DCC_PUBLISH_SESSIONS:?Set comma-separated session names}
+      DCC_SESSIONS_DIR: /home/dcc/.claude/sessions
+      DCC_SOCKETS_DIR: /run/user/${DCC_UID}/cc-socks
+    volumes:
+      - ${HOME}/.claude/sessions:/home/dcc/.claude/sessions
+      - /run/user/${DCC_UID}/cc-socks:/run/user/${DCC_UID}/cc-socks
+    restart: unless-stopped

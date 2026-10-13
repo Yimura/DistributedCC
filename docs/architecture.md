@@ -85,7 +85,7 @@ Session names must be globally unique. Existing manager keeps exact name `yrrp-r
 
 Broker derives source node from authenticated connection. Source session must be published by that connection. Broker rejects source names not owned by connection.
 
-Destination bridge builds peer envelope from authenticated broker metadata. It does not trust sender-supplied `from`, `from-name`, `from-session`, or `from-mode` fields.
+Destination bridge builds peer envelope from authenticated broker metadata. It does not trust sender-supplied `from`, `from-name`, `from-session`, or `from-mode` fields. Envelope `from` points to source session's local mirrored Unix socket so automatic replies remain native.
 
 ## Peer-origin behavior
 

@@ -1,0 +1,3 @@
+{$DCC_DOMAIN} {
+    reverse_proxy broker:8765
+}
