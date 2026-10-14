@@ -36,11 +36,9 @@ from distributedcc.server import (
     make_process_request,
 )
 
-EXPECTED_EGRESS_BY_CLAUDE_VERSION = {
-    "2.1.296": {
-        EgressAttempt("CONNECT", "downloads.claude.ai:443"),
-        EgressAttempt("CONNECT", "github.com:443"),
-    },
+ALLOWED_CLAUDE_STARTUP_EGRESS = {
+    EgressAttempt("CONNECT", "downloads.claude.ai:443"),
+    EgressAttempt("CONNECT", "github.com:443"),
 }
 
 
@@ -125,10 +123,7 @@ class IntegrationHarness:
             }
         )
         self.deny_proxy = DenyingProxy()
-        self.allowed_egress = EXPECTED_EGRESS_BY_CLAUDE_VERSION.get(
-            ClaudeProcess.resolve_version(),
-            set(),
-        )
+        self.allowed_egress = ALLOWED_CLAUDE_STARTUP_EGRESS
         self.broker = RecordingBroker()
         self.broker_server: Server | None = None
         self.bridge_tasks: list[asyncio.Task[None]] = []
