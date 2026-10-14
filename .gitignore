@@ -32,6 +32,7 @@ htmlcov/
 # Runtime state
 runtime/
 .worktrees/
+docs/superpowers/
 
 # Editors and operating systems
 .idea/
