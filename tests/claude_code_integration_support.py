@@ -163,10 +163,22 @@ class IntegrationHarness:
         exc: BaseException | None,
         traceback: object,
     ) -> None:
+        diagnostic_error: BaseException | None = None
+        try:
+            if exc is not None:
+                self.write_diagnostics(exc)
+        except BaseException as error:
+            diagnostic_error = error
+        finally:
+            errors = await self.cleanup()
+
         if exc is not None:
-            self.write_diagnostics(exc)
-        errors = await self.cleanup()
-        if errors and exc is None:
+            if diagnostic_error is not None:
+                exc.add_note(f"diagnostic write failed: {diagnostic_error!r}")
+            for error in errors:
+                exc.add_note(f"cleanup failed: {error!r}")
+            return
+        if errors:
             raise ExceptionGroup("integration cleanup failed", errors)
 
     async def wait_ready(self) -> None:

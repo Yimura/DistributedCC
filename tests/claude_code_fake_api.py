@@ -166,14 +166,18 @@ class ScriptedAnthropicServer:
         app.router.add_post("/v1/messages", self.handle_messages)
         app.router.add_route("*", "/{tail:.*}", self.reject_unexpected)
         self.runner = web.AppRunner(app)
-        await self.runner.setup()
-        site = web.TCPSite(self.runner, "127.0.0.1", 0)
-        await site.start()
-        server = site._server
-        assert server is not None and server.sockets
-        port = server.sockets[0].getsockname()[1]
-        self.base_url = f"http://127.0.0.1:{port}"
-        return self
+        try:
+            await self.runner.setup()
+            site = web.TCPSite(self.runner, "127.0.0.1", 0)
+            await site.start()
+            server = site._server
+            assert server is not None and server.sockets
+            port = server.sockets[0].getsockname()[1]
+            self.base_url = f"http://127.0.0.1:{port}"
+            return self
+        except BaseException:
+            await self.runner.cleanup()
+            raise
 
     async def __aexit__(self, *args: object) -> None:
         assert self.runner is not None

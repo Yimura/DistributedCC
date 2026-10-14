@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import aiohttp
+import claude_code_fake_api as fake_api_module
 import claude_code_process as process_module
 import pytest
 from claude_code_fake_api import (
@@ -413,6 +414,60 @@ async def test_setup_failure_cleans_resources_and_writes_diagnostics(
     diagnostics = list(integration_artifact_dir.glob("*.json"))
     assert len(diagnostics) == 1
     assert "forced API startup failure" in diagnostics[0].read_text()
+
+
+async def test_fake_server_partial_startup_cleans_runner(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    cleanup_called = False
+    real_cleanup = fake_api_module.web.AppRunner.cleanup
+
+    async def fail_site_start(site: fake_api_module.web.TCPSite) -> None:
+        raise OSError("forced site startup failure")
+
+    async def track_cleanup(runner: fake_api_module.web.AppRunner) -> None:
+        nonlocal cleanup_called
+        cleanup_called = True
+        await real_cleanup(runner)
+
+    monkeypatch.setattr(fake_api_module.web.TCPSite, "start", fail_site_start)
+    monkeypatch.setattr(fake_api_module.web.AppRunner, "cleanup", track_cleanup)
+    server = ScriptedAnthropicServer({})
+
+    with pytest.raises(OSError, match="forced site startup failure"):
+        await server.__aenter__()
+    assert cleanup_called
+
+
+@pytest.mark.claude_code_integration
+async def test_diagnostic_failure_still_cleans_owned_resources(
+    tmp_path: Path,
+    integration_artifact_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    harness = IntegrationHarness(
+        tmp_path,
+        integration_artifact_dir,
+        sender=prompting_sender(allow_send_message=True),
+        receiver=prompting_receiver(inbound_accept=True),
+        sender_steps=[],
+        receiver_steps=[],
+    )
+
+    def fail_diagnostics(error: BaseException) -> None:
+        raise OSError("artifact directory full")
+
+    monkeypatch.setattr(harness, "write_diagnostics", fail_diagnostics)
+    with pytest.raises(AssertionError, match="forced harness failure"):
+        async with harness:
+            await harness.wait_ready()
+            raise AssertionError("forced harness failure")
+
+    assert harness.sender.returncode is not None
+    assert harness.receiver.returncode is not None
+    assert all(task.done() for task in harness.bridge_tasks)
+    assert harness.owned_registry_paths() == []
+    assert harness.owned_socket_paths() == []
 
 
 @pytest.mark.claude_code_integration
