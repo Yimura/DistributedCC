@@ -1,17 +1,7 @@
 import pytest
 
 from distributedcc.protocol import PeerEvent, SessionAdvertisement
-from distributedcc.server import Broker, BrokerError, TokenAuthenticator
-
-
-def test_loads_node_tokens_from_config_file(tmp_path) -> None:
-    config = tmp_path / "node-tokens.json"
-    config.write_text('{"andre":"andre-secret","friend":"friend-secret"}')
-
-    authenticator = TokenAuthenticator.from_file(config)
-
-    assert authenticator.authenticate("Bearer andre-secret") == "andre"
-    assert authenticator.authenticate("Bearer friend-secret") == "friend"
+from distributedcc.server import Broker, BrokerError
 
 
 class FakeConnection:

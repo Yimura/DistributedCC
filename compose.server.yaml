@@ -3,23 +3,16 @@ services:
     image: ${DCC_IMAGE:-ghcr.io/yimura/distributedcc:latest}
     command: distributedcc-server
     environment:
-      DCC_NODE_TOKENS_FILE: /run/configs/node-tokens.json
+      DCC_NODE_TOKENS: |
+        {
+          "andre": "${DCC_NODE_TOKEN_ANDRE:?Set Andre node token}",
+          "friend": "${DCC_NODE_TOKEN_FRIEND:?Set friend node token}"
+        }
       DCC_SERVER_HOST: 0.0.0.0
       DCC_SERVER_PORT: "8765"
-    configs:
-      - source: node_tokens
-        target: /run/configs/node-tokens.json
     ports:
       - "${DCC_BIND_ADDRESS:-127.0.0.1}:${DCC_PUBLISHED_PORT:-8765}:8765"
     read_only: true
     tmpfs:
       - /tmp
     restart: unless-stopped
-
-configs:
-  node_tokens:
-    content: |
-      {
-        "andre": "${DCC_NODE_TOKEN_ANDRE:?Set Andre node token}",
-        "friend": "${DCC_NODE_TOKEN_FRIEND:?Set friend node token}"
-      }

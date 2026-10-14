@@ -8,7 +8,6 @@ import json
 import os
 from dataclasses import dataclass
 from http import HTTPStatus
-from pathlib import Path
 from typing import Protocol
 
 from websockets.asyncio.server import ServerConnection, serve
@@ -43,10 +42,6 @@ class TokenAuthenticator:
         ):
             raise ValueError("node token configuration must be a string map")
         return cls(value)
-
-    @classmethod
-    def from_file(cls, path: Path) -> TokenAuthenticator:
-        return cls.from_json(path.read_text())
 
     def authenticate(self, authorization: str | None) -> str | None:
         if authorization is None or not authorization.startswith("Bearer "):
@@ -252,11 +247,7 @@ async def _handle_client_message(
 
 
 async def run_server() -> None:
-    token_file = os.environ.get("DCC_NODE_TOKENS_FILE")
-    if token_file:
-        authenticator = TokenAuthenticator.from_file(Path(token_file))
-    else:
-        authenticator = TokenAuthenticator.from_json(os.environ["DCC_NODE_TOKENS"])
+    authenticator = TokenAuthenticator.from_json(os.environ["DCC_NODE_TOKENS"])
     host = os.environ.get("DCC_SERVER_HOST", "0.0.0.0")
     port = int(os.environ.get("DCC_SERVER_PORT", "8765"))
     broker = Broker()

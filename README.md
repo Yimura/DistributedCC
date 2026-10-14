@@ -59,7 +59,7 @@ DCC_NODE_TOKEN_ANDRE=<andre-secret>
 DCC_NODE_TOKEN_FRIEND=<friend-secret>
 ```
 
-`compose.server.yaml` renders these values into a readable JSON config and mounts it at `/run/configs/node-tokens.json`. To add or rename nodes, edit the `configs.node_tokens.content` map and matching `.env` variables.
+`compose.server.yaml` renders these values into readable multiline JSON in `DCC_NODE_TOKENS`. This works with Compose and stack deployment engines that only support file-backed configs. To add or rename nodes, edit the JSON map and matching `.env` variables.
 
 Start the broker:
 
