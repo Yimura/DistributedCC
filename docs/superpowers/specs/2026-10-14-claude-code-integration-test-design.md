@@ -46,12 +46,12 @@ A `ClaudeProcess` fixture launches a persistent Claude Code session with:
 - an isolated configuration directory and home directory;
 - an explicit permission mode and session-scoped settings;
 - `ANTHROPIC_BASE_URL` pointing to the fake backend;
-- a process-specific dummy authentication token;
+- a process-specific dummy token supplied through an isolated `apiKeyHelper`;
 - a restricted tool surface containing only tools required by the scenario;
-- captured structured output and standard error;
+- captured pseudo-terminal output for visible-result assertions and diagnostics;
 - no dependence on user, project, plugin, hook, memory, or prior-session state.
 
-The fixture verifies the CLI version before starting the scenario. It never resumes an ambient session.
+The fixture verifies the CLI version before starting the scenario. It uses non-bare interactive PTY mode because Claude Code 2.1.296 omits `messagingSocketPath` in print mode and with `--bare`. It pre-seeds onboarding and workspace trust in the isolated configuration, strips inherited parent-session markers, and never resumes an ambient session.
 
 ### DistributedCC fixture
 
@@ -87,7 +87,7 @@ The sender uses prompting-class mode with an explicit `SendMessage` allow rule. 
 
 ### Tool denied
 
-The sender uses `dontAsk` without a `SendMessage` allow rule. The fake backend requests `SendMessage`. Claude Code must deny the tool, and the broker must receive no route event.
+The sender uses `dontAsk` with an explicit `SendMessage` disallow rule. Omitting an allow rule is insufficient because Claude Code treats native `SendMessage` as safe. The fake backend requests `SendMessage`; Claude Code must return an error tool result, and the broker must receive no route event.
 
 ### Bypass propagation
 
@@ -110,7 +110,7 @@ The happy-path integration test asserts:
 - receiver Claude produces the scripted answer;
 - sender Claude sends the returned answer to the fake backend;
 - all processes remain healthy until orderly shutdown;
-- no request reaches an external network endpoint.
+- no request reaches an external network endpoint; a fixture-owned deny proxy records and blocks Claude Code's model-catalog probes to `downloads.claude.ai`.
 
 Permission tests assert both the visible Claude Code result and the absence or presence of broker routing. Request-contract assertions use parsed JSON objects rather than serialized-string equality.
 
@@ -120,7 +120,7 @@ Every process and server starts under one cleanup stack. Cleanup runs after succ
 
 A failed test reports:
 
-- Claude Code structured output and standard error;
+- normalized Claude Code PTY output;
 - fake backend request and response state history;
 - broker and bridge logs;
 - registry snapshot;
@@ -135,7 +135,9 @@ Logs redact authentication tokens and avoid persisting message content beyond de
 Primary ownership remains in DistributedCC:
 
 - `tests/test_claude_code_integration.py` contains scenarios;
-- `tests/claude_code_integration_support.py` contains process, backend, waiting, and diagnostics helpers;
+- `tests/claude_code_process.py` contains PTY process, version, egress, waiting, and redaction helpers;
+- `tests/claude_code_fake_api.py` contains SSE response and scripted Messages API helpers;
+- `tests/claude_code_integration_support.py` contains broker, bridge, lifecycle, and diagnostics orchestration;
 - `claude_code_integration` marks tests requiring the real CLI;
 - normal test runs exclude that marker;
 - the dedicated integration workflow runs only that marker.

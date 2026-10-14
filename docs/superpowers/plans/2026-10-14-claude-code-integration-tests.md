@@ -31,6 +31,19 @@
 - Create `.github/workflows/tests.yml`: normal test matrix and quality checks.
 - Create `.github/workflows/claude-code-integration.yml`: pinned blocking and latest non-blocking integration jobs.
 
+## Execution findings
+
+Implementation validated the early CLI checkpoint and took its documented PTY branch:
+
+- print-stream mode registers without `messagingSocketPath`;
+- interactive `--bare` mode also omits the peer socket;
+- non-bare PTY mode creates the native socket after isolated onboarding, workspace trust, and API-key-helper setup;
+- inherited `CLAUDE_CODE_CHILD_SESSION` and related parent markers must be stripped;
+- bypass mode requires deterministic acceptance of its safety warning before registration;
+- native `SendMessage` is safe by default, so denial coverage uses explicit `--disallowedTools SendMessage`;
+- interactive mode attempts model-catalog connections to `downloads.claude.ai`; the fixture-owned proxy blocks and records them;
+- support code split into `claude_code_process.py`, `claude_code_fake_api.py`, and `claude_code_integration_support.py` to keep each file focused.
+
 ## Known assumptions to validate first
 
 1. `claude -p --input-format stream-json` must remain alive and create a real registry record while stdin stays open. If not, switch the fixture to a PTY-backed interactive process before building the rest.
