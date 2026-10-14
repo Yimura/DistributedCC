@@ -37,7 +37,10 @@ from distributedcc.server import (
 )
 
 EXPECTED_EGRESS_BY_CLAUDE_VERSION = {
-    "2.1.296": {EgressAttempt("CONNECT", "downloads.claude.ai:443")},
+    "2.1.296": {
+        EgressAttempt("CONNECT", "downloads.claude.ai:443"),
+        EgressAttempt("CONNECT", "github.com:443"),
+    },
 }
 
 

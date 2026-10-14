@@ -368,6 +368,11 @@ async def test_spawn_failure_closes_pty_master(
 
     monkeypatch.setattr(process_module.pty, "openpty", tracked_openpty)
     monkeypatch.setattr(process_module.asyncio, "create_subprocess_exec", fail_spawn)
+    monkeypatch.setattr(
+        ClaudeProcess,
+        "resolve_version",
+        staticmethod(lambda: "2.1.296"),
+    )
     process = ClaudeProcess(
         tmp_path / "spawn-failure",
         ClaudeLaunchOptions(
@@ -396,6 +401,11 @@ async def test_setup_failure_cleans_resources_and_writes_diagnostics(
         raise OSError("forced API startup failure")
 
     monkeypatch.setattr(ScriptedAnthropicServer, "__aenter__", fail_server_start)
+    monkeypatch.setattr(
+        ClaudeProcess,
+        "resolve_version",
+        staticmethod(lambda: "2.1.296"),
+    )
     harness = IntegrationHarness(
         tmp_path,
         integration_artifact_dir,

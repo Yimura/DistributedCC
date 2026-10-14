@@ -426,5 +426,3 @@ class DenyingProxy:
         finally:
             writer.close()
             await writer.wait_closed()
-
-

@@ -424,5 +424,3 @@ def receiver_round_trip_steps(source_mode: str = "prompting") -> list[ScriptStep
             contains_tool_result("toolu_receiver_reply"),
         ),
     ]
-
-
