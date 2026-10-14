@@ -20,6 +20,7 @@ venv/
 .coverage.*
 coverage.xml
 htmlcov/
+.artifacts/
 
 # Local configuration and secrets
 .env

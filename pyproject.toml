@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = [
+    "aiohttp>=3.13,<4",
     "pytest>=8.4,<10",
     "pytest-asyncio>=1.2,<2",
     "ruff>=0.14,<1",
@@ -27,8 +28,17 @@ distributedcc-bridge = "distributedcc.bridge:main"
 packages = ["src/distributedcc"]
 
 [tool.pytest.ini_options]
+addopts = [
+    "--strict-config",
+    "--strict-markers",
+    "-m",
+    "not claude_code_integration",
+]
 asyncio_mode = "auto"
 testpaths = ["tests"]
+markers = [
+    "claude_code_integration: requires a real Claude Code CLI and Linux peer messaging",
+]
 
 [tool.ruff]
 target-version = "py312"
