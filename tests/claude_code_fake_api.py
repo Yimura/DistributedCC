@@ -7,7 +7,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from aiohttp import web
-from claude_code_process import DenyingProxy
+from claude_code_process import DenyingProxy, EgressAttempt
 
 from distributedcc.protocol import PeerEnvelope, parse_peer_envelope
 
@@ -222,10 +222,14 @@ class ScriptedAnthropicServer:
         self.unexpected_requests.append(f"{request.method} {request.path_qs}")
         return web.Response(status=404)
 
-    def assert_clean(self, deny_proxy: DenyingProxy) -> None:
+    def assert_clean(
+        self,
+        deny_proxy: DenyingProxy,
+        allowed_egress: set[EgressAttempt],
+    ) -> None:
         assert self.failures == []
         assert self.unexpected_requests == []
-        deny_proxy.assert_only_expected_attempts()
+        deny_proxy.assert_allowed_attempts(allowed_egress)
         incomplete = {
             name: [step.label for step in scenario.steps]
             for name, scenario in self.scenarios.items()

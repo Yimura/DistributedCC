@@ -11,6 +11,7 @@ import signal
 import subprocess
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 
 from aiohttp import web
@@ -25,7 +26,6 @@ class ClaudeLaunchOptions:
     permission_mode: str
     allow_send_message: bool
     inbound_accept: bool
-    bypass: bool
     deny_proxy_url: str | None = None
 
 
@@ -115,6 +115,20 @@ class ReadinessServer:
         return web.Response(status=503)
 
 
+@lru_cache(maxsize=1)
+def _installed_version_output() -> str:
+    executable = shutil.which("claude")
+    if executable is None:
+        raise AssertionError("claude executable not found")
+    completed = subprocess.run(
+        [executable, "--version"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return completed.stdout
+
+
 class ClaudeProcess:
     def __init__(self, root: Path, options: ClaudeLaunchOptions) -> None:
         self.root = root
@@ -124,22 +138,13 @@ class ClaudeProcess:
         self.sessions_dir = self.config_dir / "sessions"
         self.workspace = root / "workspace"
         self.process: asyncio.subprocess.Process | None = None
-        self.reader_tasks: list[asyncio.Task[None]] = []
+        self.reader_task: asyncio.Task[None] | None = None
         self.master_fd: int | None = None
         self.terminal_output = bytearray()
 
     @staticmethod
     def resolve_version() -> str:
-        executable = shutil.which("claude")
-        if executable is None:
-            raise AssertionError("claude executable not found")
-        completed = subprocess.run(
-            [executable, "--version"],
-            check=True,
-            capture_output=True,
-            text=True,
-        )
-        return validate_version(completed.stdout)
+        return validate_version(_installed_version_output())
 
     @property
     def returncode(self) -> int | None:
@@ -164,8 +169,8 @@ class ClaudeProcess:
             )
         finally:
             os.close(slave_fd)
-        self.reader_tasks = [asyncio.create_task(self._read_terminal())]
-        if self.options.bypass:
+        self.reader_task = asyncio.create_task(self._read_terminal())
+        if self.options.permission_mode == "bypassPermissions":
             await wait_until(
                 "bypass warning",
                 self.terminal_text,
@@ -187,7 +192,8 @@ class ClaudeProcess:
         await self._wait_or_signal(signal.SIGINT, 2.0)
         await self._wait_or_signal(signal.SIGTERM, 2.0)
         await self._wait_or_signal(signal.SIGKILL, 2.0)
-        await asyncio.gather(*self.reader_tasks, return_exceptions=True)
+        if self.reader_task is not None:
+            await asyncio.gather(self.reader_task, return_exceptions=True)
         if self.master_fd is not None:
             os.close(self.master_fd)
             self.master_fd = None
@@ -212,10 +218,6 @@ class ClaudeProcess:
         expected_compact = re.sub(r"\s+", "", expected).casefold()
         terminal_compact = re.sub(r"\s+", "", self.terminal_text()).casefold()
         return expected_compact in terminal_compact
-
-    def has_denied_tool_result(self, tool_use_id: str) -> bool:
-        text = self.terminal_text().lower()
-        return tool_use_id.lower() in text and "denied" in text
 
     def _prepare_config(self) -> None:
         state = {
@@ -258,7 +260,7 @@ class ClaudeProcess:
             "--settings",
             settings,
         ]
-        if self.options.bypass:
+        if self.options.permission_mode == "bypassPermissions":
             command.extend(
                 ["--allow-dangerously-skip-permissions", "--dangerously-skip-permissions"]
             )
@@ -314,17 +316,25 @@ class ClaudeProcess:
 
     async def _read_terminal(self) -> None:
         assert self.master_fd is not None
-        while self.process is not None and self.process.returncode is None:
-            try:
-                chunk = os.read(self.master_fd, 65536)
-            except BlockingIOError:
-                await asyncio.sleep(0.01)
-                continue
-            except OSError:
-                break
-            if not chunk:
-                break
-            self.terminal_output.extend(chunk)
+        loop = asyncio.get_running_loop()
+        readable = asyncio.Event()
+        loop.add_reader(self.master_fd, readable.set)
+        try:
+            while True:
+                await readable.wait()
+                readable.clear()
+                while True:
+                    try:
+                        chunk = os.read(self.master_fd, 65536)
+                    except BlockingIOError:
+                        break
+                    except OSError:
+                        return
+                    if not chunk:
+                        return
+                    self.terminal_output.extend(chunk)
+        finally:
+            loop.remove_reader(self.master_fd)
 
     async def _wait_or_signal(self, sig: signal.Signals, timeout: float) -> None:
         assert self.process is not None
@@ -365,12 +375,8 @@ class DenyingProxy:
         self.server.close()
         await self.server.wait_closed()
 
-    def assert_only_expected_attempts(self) -> None:
-        unexpected = [
-            attempt
-            for attempt in self.attempts
-            if attempt != EgressAttempt("CONNECT", "downloads.claude.ai:443")
-        ]
+    def assert_allowed_attempts(self, allowed: set[EgressAttempt]) -> None:
+        unexpected = [attempt for attempt in self.attempts if attempt not in allowed]
         assert unexpected == []
 
     async def _handle(

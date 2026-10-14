@@ -18,6 +18,7 @@ from claude_code_process import (
     ClaudeLaunchOptions,
     ClaudeProcess,
     DenyingProxy,
+    EgressAttempt,
     redact,
     wait_until,
 )
@@ -33,6 +34,10 @@ from distributedcc.server import (
     handle_websocket,
     make_process_request,
 )
+
+EXPECTED_EGRESS_BY_CLAUDE_VERSION = {
+    "2.1.296": {EgressAttempt("CONNECT", "downloads.claude.ai:443")},
+}
 
 
 class RecordingBroker(Broker):
@@ -59,7 +64,6 @@ def prompting_sender(*, allow_send_message: bool) -> ClaudeLaunchOptions:
         permission_mode="dontAsk",
         allow_send_message=allow_send_message,
         inbound_accept=True,
-        bypass=False,
     )
 
 
@@ -76,7 +80,6 @@ def prompting_receiver(
         permission_mode="dontAsk",
         allow_send_message=allow_send_message,
         inbound_accept=inbound_accept,
-        bypass=False,
     )
 
 
@@ -84,7 +87,6 @@ def bypass_sender() -> ClaudeLaunchOptions:
     return dataclasses.replace(
         prompting_sender(allow_send_message=True),
         permission_mode="bypassPermissions",
-        bypass=True,
     )
 
 
@@ -92,7 +94,6 @@ def bypass_receiver(*, inbound_accept: bool) -> ClaudeLaunchOptions:
     return dataclasses.replace(
         prompting_receiver(inbound_accept=inbound_accept),
         permission_mode="bypassPermissions",
-        bypass=True,
     )
 
 
@@ -120,6 +121,10 @@ class IntegrationHarness:
             }
         )
         self.deny_proxy = DenyingProxy()
+        self.allowed_egress = EXPECTED_EGRESS_BY_CLAUDE_VERSION.get(
+            ClaudeProcess.resolve_version(),
+            set(),
+        )
         self.broker = RecordingBroker()
         self.broker_server: Server | None = None
         self.bridge_tasks: list[asyncio.Task[None]] = []
@@ -134,8 +139,9 @@ class IntegrationHarness:
         self.receiver = self._make_process("receiver", self.receiver_options)
         try:
             await self._start_broker()
-            await self.sender.start()
-            await self.receiver.start()
+            async with asyncio.TaskGroup() as group:
+                group.create_task(self.sender.start())
+                group.create_task(self.receiver.start())
             self._start_bridges()
         except BaseException:
             await self.cleanup()
@@ -269,6 +275,12 @@ class IntegrationHarness:
                 return record.body
         raise AssertionError("receiver has no peer request")
 
+    def assert_clean(self) -> None:
+        self.fake_server.assert_clean(self.deny_proxy, self.allowed_egress)
+
+    def assert_egress_policy(self) -> None:
+        self.deny_proxy.assert_allowed_attempts(self.allowed_egress)
+
     def real_session_names(self, side: str) -> set[str]:
         process = self._process(side)
         return {
@@ -313,9 +325,16 @@ class IntegrationHarness:
             errors,
             asyncio.gather(*self.bridge_tasks, return_exceptions=True),
         )
-        for process in (getattr(self, "sender", None), getattr(self, "receiver", None)):
-            if process is not None:
-                await self._collect_cleanup(errors, process.stop())
+        processes = [
+            process
+            for process in (getattr(self, "sender", None), getattr(self, "receiver", None))
+            if process is not None
+        ]
+        results = await asyncio.gather(
+            *(process.stop() for process in processes),
+            return_exceptions=True,
+        )
+        errors.extend(result for result in results if isinstance(result, BaseException))
         if self.broker_server is not None:
             self.broker_server.close()
             await self._collect_cleanup(errors, self.broker_server.wait_closed())
