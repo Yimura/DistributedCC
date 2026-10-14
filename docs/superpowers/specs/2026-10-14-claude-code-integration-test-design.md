@@ -148,7 +148,7 @@ The support module may reuse patterns from `claude-code-proxy`, but DistributedC
 
 ### Normal tests workflow
 
-`.github/workflows/tests.yml` runs for pull-request `opened`, `reopened`, and `synchronize` events. It installs supported Python versions and project test dependencies, then runs the complete normal suite excluding `claude_code_integration`, lint checks, and diff hygiene.
+`.github/workflows/tests.yml` runs for pull-request `opened`, `reopened`, and `synchronize` events. It uses Python 3.14 to match the project container, installs test dependencies, then runs the complete normal suite excluding `claude_code_integration`, lint checks, and diff hygiene.
 
 The workflow uses read-only repository permissions, dependency caching, concurrency cancellation for superseded revisions, and immutable action revisions.
 

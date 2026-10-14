@@ -42,7 +42,8 @@ Implementation validated the early CLI checkpoint and took its documented PTY br
 - bypass mode requires deterministic acceptance of its safety warning before registration;
 - native `SendMessage` is safe by default, so denial coverage uses explicit `--disallowedTools SendMessage`;
 - interactive mode attempts model-catalog connections to `downloads.claude.ai`; the fixture-owned proxy blocks and records them;
-- support code split into `claude_code_process.py`, `claude_code_fake_api.py`, and `claude_code_integration_support.py` to keep each file focused.
+- support code split into `claude_code_process.py`, `claude_code_fake_api.py`, and `claude_code_integration_support.py` to keep each file focused;
+- normal CI uses only Python 3.14, matching the project container instead of maintaining a redundant interpreter matrix.
 
 ## Known assumptions to validate first
 
