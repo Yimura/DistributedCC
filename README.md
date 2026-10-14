@@ -70,7 +70,9 @@ docker compose -f compose.server.yaml pull
 docker compose -f compose.server.yaml up -d
 ```
 
-The broker exposes insecure WebSocket traffic at `ws://127.0.0.1:8765` by default. Configure your external reverse proxy to terminate TLS and forward WebSocket upgrades to that address. Clients still connect through `wss://<your-domain>`.
+The broker exposes insecure WebSocket traffic at `ws://127.0.0.1:8765` by default. Configure your external reverse proxy to terminate TLS and forward WebSocket upgrades to the broker. Clients still connect through `wss://<your-domain>`.
+
+If the reverse proxy runs in a container, it cannot reach host loopback. Set `DCC_BIND_ADDRESS` to the host LAN address or `0.0.0.0`, forward to that host address on port 8765, and restrict direct port access with a firewall. For Nginx Proxy Manager, use **HTTP**, port **8765**, enable **Websockets Support**, select a certificate, and enable **Force SSL**.
 
 Verify the broker directly on its host:
 
