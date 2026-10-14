@@ -24,7 +24,7 @@ DistributedCC does not provide lease management. Agents such as `yrrp-release-ma
 - Docker Engine with Compose
 - Claude Code 2.1.294 tested; other versions allowed with a compatibility warning
 - globally unique published Claude session names
-- a broker host with a public DNS name and inbound TCP ports 80 and 443
+- an external reverse proxy that terminates TLS and supports WebSocket upgrades
 
 Published container image:
 
@@ -49,28 +49,31 @@ openssl rand -hex 32
 openssl rand -hex 32
 ```
 
-Edit `.env` and configure the public domain plus a distinct token for each node:
+Edit `.env` and configure broker binding plus a distinct token for each node:
 
 ```dotenv
 DCC_IMAGE=ghcr.io/yimura/distributedcc:latest
-DCC_DOMAIN=dcc.example.com
+DCC_BIND_ADDRESS=127.0.0.1
+DCC_PUBLISHED_PORT=8765
 DCC_NODE_TOKEN_ANDRE=<andre-secret>
 DCC_NODE_TOKEN_FRIEND=<friend-secret>
 ```
 
 `compose.server.yaml` renders these values into a readable JSON config and mounts it at `/run/configs/node-tokens.json`. To add or rename nodes, edit the `configs.node_tokens.content` map and matching `.env` variables.
 
-Point the domain's DNS record at the broker host, then start the stack:
+Start the broker:
 
 ```bash
 docker compose -f compose.server.yaml pull
 docker compose -f compose.server.yaml up -d
 ```
 
-Caddy obtains the TLS certificate and exposes the broker at `wss://<DCC_DOMAIN>`. Verify it:
+The broker exposes insecure WebSocket traffic at `ws://127.0.0.1:8765` by default. Configure your external reverse proxy to terminate TLS and forward WebSocket upgrades to that address. Clients still connect through `wss://<your-domain>`.
+
+Verify the broker directly on its host:
 
 ```bash
-curl https://<DCC_DOMAIN>/healthz
+curl http://127.0.0.1:8765/healthz
 ```
 
 Expected response:
@@ -161,14 +164,14 @@ uv run --extra dev pytest -q
 uv run --extra dev ruff check .
 ```
 
-Run the broker without Caddy only for trusted local tests:
+Run the broker directly for trusted local tests:
 
 ```bash
 export DCC_NODE_TOKENS='{"andre":"andre-secret","friend":"friend-secret"}'
 uv run distributedcc-server
 ```
 
-Use `ws://127.0.0.1:8765` only for local testing. Public deployments must use WSS through Caddy.
+Never expose plain `ws://` traffic publicly. Keep the broker on loopback or a trusted private network, and terminate public WSS at your reverse proxy.
 
 ## Stop and clean up
 

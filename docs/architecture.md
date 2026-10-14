@@ -11,7 +11,7 @@ Each laptop runs dedicated bridge client. Central public server routes events be
 MVP provides:
 
 - event-driven, bidirectional Claude Code session communication;
-- public TLS WebSocket broker;
+- plain WebSocket broker intended for an operator-supplied TLS reverse proxy;
 - one dedicated bridge client per laptop;
 - one unique pre-shared bearer secret per laptop;
 - transient virtual sessions visible through `ListAgents`;
@@ -27,7 +27,7 @@ MVP excludes:
 - browser clients;
 - MCP;
 - Claude Code setting changes;
-- support for unverified Claude Code versions.
+- guaranteed compatibility with untested Claude Code versions.
 
 `yrrp-release-manager` remains coordination authority. Its instructions serialize access to shared resources.
 
@@ -35,7 +35,7 @@ MVP excludes:
 
 ### Broker
 
-Broker runs as Python WebSocket service behind Caddy. Caddy terminates public TLS and forwards authenticated WSS connections to broker container.
+Broker runs as a plain Python WebSocket service bound to loopback by default. An operator-supplied reverse proxy terminates public TLS and forwards authenticated WSS connections to the broker port.
 
 Broker keeps volatile directory of connected nodes and published sessions. It routes semantic peer events by globally unique session name.
 

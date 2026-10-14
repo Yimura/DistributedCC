@@ -9,26 +9,11 @@ services:
     configs:
       - source: node_tokens
         target: /run/configs/node-tokens.json
-    expose:
-      - "8765"
+    ports:
+      - "${DCC_BIND_ADDRESS:-127.0.0.1}:${DCC_PUBLISHED_PORT:-8765}:8765"
     read_only: true
     tmpfs:
       - /tmp
-    restart: unless-stopped
-
-  caddy:
-    image: caddy:2.10.2-alpine
-    depends_on:
-      - broker
-    environment:
-      DCC_DOMAIN: ${DCC_DOMAIN:?Set public broker domain}
-    ports:
-      - "80:80"
-      - "443:443"
-    volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy_data:/data
-      - caddy_config:/config
     restart: unless-stopped
 
 configs:
@@ -38,7 +23,3 @@ configs:
         "andre": "${DCC_NODE_TOKEN_ANDRE:?Set Andre node token}",
         "friend": "${DCC_NODE_TOKEN_FRIEND:?Set friend node token}"
       }
-
-volumes:
-  caddy_data:
-  caddy_config:
