@@ -1,0 +1,147 @@
+name: Claude Code integration
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize]
+  schedule:
+    - cron: "17 4 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: claude-code-integration-${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  supported:
+    name: Claude Code 2.1.296
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    env:
+      CLAUDE_PACKAGE_VERSION: 2.1.296
+      EXPECTED_CLAUDE_CODE_VERSION: 2.1.296
+      DCC_INTEGRATION_ARTIFACT_DIR: .artifacts/claude-code-integration/supported
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      DISABLE_TELEMETRY: "1"
+      DISABLE_ERROR_REPORTING: "1"
+      DISABLE_UPDATES: "1"
+      DISABLE_AUTOUPDATER: "1"
+      DISABLE_INSTALLATION_CHECKS: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.14"
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Install Claude Code
+        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_PACKAGE_VERSION}"
+
+      - name: Record resolved Claude version
+        run: |
+          resolved="$(claude --version)"
+          printf '### Claude Code supported\n\n`%s`\n' "$resolved" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run Claude Code integration tests
+        run: >-
+          uv run --no-sync pytest
+          -o "addopts=--strict-config --strict-markers"
+          -m claude_code_integration
+          tests/test_claude_code_integration.py
+          -vv
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: claude-code-integration-supported
+          path: .artifacts/claude-code-integration/supported
+          if-no-files-found: warn
+          retention-days: 7
+
+  latest:
+    name: Claude Code latest compatibility
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    continue-on-error: true
+    env:
+      CLAUDE_PACKAGE_VERSION: latest
+      EXPECTED_CLAUDE_CODE_VERSION: ""
+      DCC_INTEGRATION_ARTIFACT_DIR: .artifacts/claude-code-integration/latest
+      CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC: "1"
+      DISABLE_TELEMETRY: "1"
+      DISABLE_ERROR_REPORTING: "1"
+      DISABLE_UPDATES: "1"
+      DISABLE_AUTOUPDATER: "1"
+      DISABLE_INSTALLATION_CHECKS: "1"
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          persist-credentials: false
+
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: "3.14"
+
+      - name: Set up Node
+        uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38
+        with:
+          node-version: "24"
+
+      - name: Set up uv
+        uses: astral-sh/setup-uv@37802adc94f370d6bfd71619e3f0bf239e1f3b78
+        with:
+          enable-cache: true
+          cache-dependency-glob: uv.lock
+
+      - name: Install Python dependencies
+        run: uv sync --frozen --extra dev
+
+      - name: Install Claude Code
+        run: npm install --global "@anthropic-ai/claude-code@${CLAUDE_PACKAGE_VERSION}"
+
+      - name: Record resolved Claude version
+        run: |
+          resolved="$(claude --version)"
+          printf '### Claude Code latest\n\n`%s`\n' "$resolved" >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Run Claude Code integration tests
+        run: >-
+          uv run --no-sync pytest
+          -o "addopts=--strict-config --strict-markers"
+          -m claude_code_integration
+          tests/test_claude_code_integration.py
+          -vv
+
+      - name: Upload failure diagnostics
+        if: failure()
+        uses: actions/upload-artifact@b7c566a772e6b6bfb58ed0dc250532a479d7789f
+        with:
+          name: claude-code-integration-latest
+          path: .artifacts/claude-code-integration/latest
+          if-no-files-found: warn
+          retention-days: 7

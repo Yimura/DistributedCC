@@ -20,6 +20,7 @@ venv/
 .coverage.*
 coverage.xml
 htmlcov/
+.artifacts/
 
 # Local configuration and secrets
 .env
@@ -30,6 +31,8 @@ htmlcov/
 
 # Runtime state
 runtime/
+.worktrees/
+docs/superpowers/
 
 # Editors and operating systems
 .idea/
