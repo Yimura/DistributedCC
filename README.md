@@ -6,7 +6,7 @@ DistributedCC bridges Claude Code sessions across Linux machines while preservin
 > DistributedCC is Linux-only. It has only been built and tested on Linux. The bridge depends on Linux `/proc`, Unix-domain sockets, `SO_PEERCRED`, host PID namespaces, and `/run/user/<uid>`.
 
 > [!WARNING]
-> DistributedCC uses private Claude Code 2.1.294 session-registry and Unix-socket protocols. It fails closed on unsupported versions, but Claude Code updates may require bridge changes.
+> DistributedCC uses private Claude Code session-registry and Unix-socket protocols. Version 2.1.294 is tested. Other valid Claude Code versions produce a warning but remain usable; protocol changes may still break messaging.
 
 Architecture and trust boundaries: [`docs/architecture.md`](docs/architecture.md).
 
@@ -22,7 +22,7 @@ DistributedCC does not provide lease management. Agents such as `yrrp-release-ma
 
 - Linux with `/proc`, Unix peer credentials, and `/run/user/<uid>`
 - Docker Engine with Compose
-- Claude Code 2.1.294 on every client machine
+- Claude Code 2.1.294 tested; other versions allowed with a compatibility warning
 - globally unique published Claude session names
 - a broker host with a public DNS name and inbound TCP ports 80 and 443
 

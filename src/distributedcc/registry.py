@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
+from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-SUPPORTED_CLAUDE_CODE_VERSION = "2.1.294"
+TESTED_CLAUDE_CODE_VERSION = "2.1.294"
 SUPPORTED_PEER_PROTOCOL = 1
 
 
@@ -57,8 +59,11 @@ def _validated_session(
 ) -> LocalSession | None:
     if record is None:
         return None
-    if record.get("version") != SUPPORTED_CLAUDE_CODE_VERSION:
+    version = record.get("version")
+    if not isinstance(version, str) or not version:
         return None
+    if version != TESTED_CLAUDE_CODE_VERSION:
+        _warn_unverified_version(version)
     if record.get("peerProtocol") != SUPPORTED_PEER_PROTOCOL:
         return None
 
@@ -89,6 +94,15 @@ def _validated_session(
         socket_path=Path(socket_path),
         permission_mode=infer_permission_mode(command),
         status=status,
+    )
+
+
+@lru_cache(maxsize=32)
+def _warn_unverified_version(version: str) -> None:
+    logging.warning(
+        "unverified Claude Code version %s; tested version is %s",
+        version,
+        TESTED_CLAUDE_CODE_VERSION,
     )
 
 

@@ -58,10 +58,24 @@ def test_rejects_stale_process_start_token(tmp_path: Path) -> None:
     assert discover_live_sessions(sessions_dir, proc_root=proc_root) == {}
 
 
-def test_rejects_unsupported_claude_version(tmp_path: Path) -> None:
+def test_warns_and_discovers_unverified_claude_version(
+    tmp_path: Path, caplog,
+) -> None:
     sessions_dir = tmp_path / "sessions"
     proc_root = tmp_path / "proc"
     write_session(sessions_dir, 123, version="2.1.295")
+    write_process(proc_root, 123, "4242", ["claude"])
+
+    sessions = discover_live_sessions(sessions_dir, proc_root=proc_root)
+
+    assert list(sessions) == ["yrrp-release-manager"]
+    assert "unverified Claude Code version 2.1.295; tested version is 2.1.294" in caplog.text
+
+
+def test_rejects_unsupported_peer_protocol(tmp_path: Path) -> None:
+    sessions_dir = tmp_path / "sessions"
+    proc_root = tmp_path / "proc"
+    write_session(sessions_dir, 123, peerProtocol=2)
     write_process(proc_root, 123, "4242", ["claude"])
 
     assert discover_live_sessions(sessions_dir, proc_root=proc_root) == {}

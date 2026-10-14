@@ -17,7 +17,7 @@ MVP provides:
 - transient virtual sessions visible through `ListAgents`;
 - native peer-origin delivery into target agent context;
 - containerized broker and bridge deployments;
-- compatibility with Claude Code 2.1.294.
+- tested compatibility with Claude Code 2.1.294; other versions continue with a warning.
 
 MVP excludes:
 
@@ -47,7 +47,7 @@ Each laptop runs one dedicated bridge client. Client connects to broker over WSS
 
 Server maps secret to fixed node identity. Client cannot select different node identity. Each laptop gets different secret, so revoking one laptop does not invalidate every client.
 
-Bridge discovers selected local Claude Code sessions from `~/.claude/sessions`. It publishes only live sessions whose PID, process start token, Claude Code version, and peer protocol match expected values.
+Bridge discovers selected local Claude Code sessions from `~/.claude/sessions`. It publishes only live sessions whose PID and process start token are valid and whose peer protocol matches. A Claude Code version mismatch logs a compatibility warning but does not block publication.
 
 ### Virtual peers
 
@@ -109,7 +109,7 @@ Broker enforces message schema, size limits, destination ownership, duplicate se
 
 Bridge fails closed when:
 
-- Claude Code version differs from `2.1.294`;
+- Claude Code version metadata is missing or malformed;
 - peer protocol differs from `1`;
 - target session PID or start token is stale;
 - target socket ownership or permissions are unsafe;

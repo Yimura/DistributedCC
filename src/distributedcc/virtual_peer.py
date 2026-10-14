@@ -22,8 +22,8 @@ from distributedcc.protocol import (
     ProtocolError,
 )
 from distributedcc.registry import (
-    SUPPORTED_CLAUDE_CODE_VERSION,
     SUPPORTED_PEER_PROTOCOL,
+    TESTED_CLAUDE_CODE_VERSION,
     discover_live_sessions,
 )
 
@@ -60,7 +60,7 @@ def build_session_record(
         "cwd": f"/virtual/{remote.node}",
         "startedAt": now_ms,
         "procStart": proc_start,
-        "version": SUPPORTED_CLAUDE_CODE_VERSION,
+        "version": TESTED_CLAUDE_CODE_VERSION,
         "peerProtocol": SUPPORTED_PEER_PROTOCOL,
         "peerFeatures": [],
         "kind": "interactive",
