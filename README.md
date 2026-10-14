@@ -54,8 +54,11 @@ Edit `.env` and configure the public domain plus a distinct token for each node:
 ```dotenv
 DCC_IMAGE=ghcr.io/yimura/distributedcc:latest
 DCC_DOMAIN=dcc.example.com
-DCC_NODE_TOKENS={"andre":"<andre-secret>","friend":"<friend-secret>"}
+DCC_NODE_TOKEN_ANDRE=<andre-secret>
+DCC_NODE_TOKEN_FRIEND=<friend-secret>
 ```
+
+`compose.server.yaml` renders these values into a readable JSON config and mounts it at `/run/configs/node-tokens.json`. To add or rename nodes, edit the `configs.node_tokens.content` map and matching `.env` variables.
 
 Point the domain's DNS record at the broker host, then start the stack:
 
