@@ -59,7 +59,9 @@ DCC_NODE_TOKEN_ANDRE=<andre-secret>
 DCC_NODE_TOKEN_FRIEND=<friend-secret>
 ```
 
-`compose.server.yaml` renders these values into readable multiline JSON in `DCC_NODE_TOKENS`. This works with Compose and stack deployment engines that only support file-backed configs. To add or rename nodes, edit the JSON map and matching `.env` variables.
+`compose.server.yaml` renders these values into readable multiline JSON in `DCC_NODE_TOKENS`. This avoids inline-config injection, which fails with read-only containers on some deployment engines. To add or rename nodes, edit the JSON map and matching `.env` variables.
+
+Node names such as `andre` and `friend` are arbitrary stable machine labels. They do not need to match host usernames, hostnames, or Claude session names. `DCC_UID` and `DCC_GID` are separate and must match the host user running Claude Code.
 
 Start the broker:
 
@@ -81,6 +83,14 @@ Expected response:
 ```text
 OK
 ```
+
+Follow broker logs with:
+
+```bash
+docker compose -f compose.server.yaml logs -f broker
+```
+
+The broker logs successful startup, node connections and disconnections, publication counts, routed message metadata, and rejected requests. It never logs bearer tokens or message bodies.
 
 ## Set up a client machine
 
@@ -132,6 +142,8 @@ docker compose -f compose.bridge.yaml up -d
 The bridge container runs with the host PID namespace and host UID/GID. It also mounts `~/.claude/sessions` and `/run/user/<uid>/cc-socks`. These permissions let Claude Code validate virtual peer PIDs, socket ownership, and process start tokens.
 
 After two bridges connect, each published remote session appears in native `ListAgents`. Either session can use native `SendMessage`; an idle recipient starts a turn, while a busy recipient receives the event between tool calls.
+
+Every session that sends or receives through the broker must appear in its bridge's `DCC_PUBLISH_SESSIONS`. Publication is bidirectional. An unpublished session cannot receive remote messages, and the broker rejects messages claiming it as their source.
 
 ## Publish more than one local session
 
