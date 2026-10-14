@@ -10,13 +10,25 @@ from claude_code_integration_support import (
     ClaudeProcess,
     DenyingProxy,
     EgressAttempt,
+    IntegrationHarness,
     ReadinessServer,
     ScriptedAnthropicServer,
     ScriptedScenario,
     ScriptStep,
+    bypass_receiver,
+    bypass_sender,
+    denial_steps,
     event_name,
+    held_message_steps,
+    peer_envelopes,
+    prompting_receiver,
+    prompting_sender,
+    receiver_round_trip_steps,
+    redact,
+    sender_round_trip_steps,
     text_response,
     tool_response,
+    tool_result_is_denied,
     validate_version,
     wait_until,
 )
@@ -166,3 +178,204 @@ async def test_scripted_server_selects_scenario_by_dummy_api_key() -> None:
     assert response.headers["Content-Type"].startswith("text/event-stream")
     assert "toolu_sender_send" in body
     assert sender.history[0].path == "/v1/messages"
+
+
+@pytest.fixture
+def integration_artifact_dir(tmp_path: Path) -> Path:
+    configured = os.environ.get("DCC_INTEGRATION_ARTIFACT_DIR")
+    path = Path(configured) if configured else tmp_path / "diagnostics"
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+
+@pytest.mark.claude_code_integration
+async def test_two_claude_sessions_become_remote_peers(
+    tmp_path: Path,
+    integration_artifact_dir: Path,
+) -> None:
+    async with IntegrationHarness(
+        tmp_path,
+        integration_artifact_dir,
+        sender=prompting_sender(allow_send_message=True),
+        receiver=prompting_receiver(inbound_accept=True),
+        sender_steps=[],
+        receiver_steps=[],
+    ) as harness:
+        await harness.wait_ready()
+
+        assert harness.real_session_names("sender") == {"dcc-sender"}
+        assert harness.real_session_names("receiver") == {"dcc-receiver"}
+        assert harness.virtual_session_names("sender") == {"dcc-receiver"}
+        assert harness.virtual_session_names("receiver") == {"dcc-sender"}
+        assert harness.sender.returncode is None
+        assert harness.receiver.returncode is None
+        harness.deny_proxy.assert_only_expected_attempts()
+
+
+@pytest.mark.claude_code_integration
+async def test_explicit_allow_round_trip(
+    tmp_path: Path,
+    integration_artifact_dir: Path,
+) -> None:
+    async with IntegrationHarness(
+        tmp_path,
+        integration_artifact_dir,
+        sender=prompting_sender(allow_send_message=True),
+        receiver=prompting_receiver(
+            inbound_accept=True,
+            allow_send_message=True,
+        ),
+        sender_steps=sender_round_trip_steps(),
+        receiver_steps=receiver_round_trip_steps(),
+    ) as harness:
+        await harness.wait_ready()
+        await harness.sender.send_user("Start the DistributedCC round-trip test.")
+        await harness.wait_for_completed_round_trip()
+
+        assert [
+            (event.source_session, event.target_session, event.source_mode, event.body)
+            for event in harness.broker.route_events
+        ] == [
+            ("dcc-sender", "dcc-receiver", "prompting", "INTEGRATION_PING"),
+            ("dcc-receiver", "dcc-sender", "prompting", "INTEGRATION_REPLY"),
+        ]
+        assert harness.sender_saw_reply("INTEGRATION_REPLY")
+        assert harness.receiver_saw_inbound("INTEGRATION_PING")
+        assert harness.sender.has_result_text("Round trip complete.")
+        assert harness.receiver.has_result_text("Receiver reply sent.")
+        harness.fake_server.assert_clean(harness.deny_proxy)
+
+
+@pytest.mark.claude_code_integration
+async def test_dont_ask_denies_disallowed_send_message(
+    tmp_path: Path,
+    integration_artifact_dir: Path,
+) -> None:
+    async with IntegrationHarness(
+        tmp_path,
+        integration_artifact_dir,
+        sender=prompting_sender(allow_send_message=False),
+        receiver=prompting_receiver(inbound_accept=True),
+        sender_steps=denial_steps(),
+        receiver_steps=[],
+    ) as harness:
+        await harness.wait_ready()
+        route_count = len(harness.broker.route_events)
+        await harness.sender.send_user("Attempt the denied integration send.")
+        continuation = await harness.wait_for_sender_continuation()
+
+        assert tool_result_is_denied(continuation, "toolu_denied_send")
+        await harness.assert_route_count_stable(route_count, duration=1.0)
+        assert not harness.receiver_saw_inbound("DENIED_MESSAGE")
+        assert harness.sender.has_result_text("Send denied.")
+        harness.deny_proxy.assert_only_expected_attempts()
+
+
+@pytest.mark.claude_code_integration
+async def test_bypass_mode_propagates_through_broker(
+    tmp_path: Path,
+    integration_artifact_dir: Path,
+) -> None:
+    async with IntegrationHarness(
+        tmp_path,
+        integration_artifact_dir,
+        sender=bypass_sender(),
+        receiver=prompting_receiver(
+            inbound_accept=True,
+            allow_send_message=True,
+        ),
+        sender_steps=sender_round_trip_steps(),
+        receiver_steps=receiver_round_trip_steps("bypass"),
+    ) as harness:
+        await harness.wait_ready()
+        assert harness.real_session("sender", "dcc-sender").permission_mode == "bypass"
+        await harness.sender.send_user("Start the DistributedCC round-trip test.")
+        await harness.wait_for_completed_round_trip()
+
+        route = harness.broker.route_events[0]
+        assert route.source_mode == "bypass"
+        envelope = next(
+            envelope
+            for envelope in peer_envelopes(harness.receiver_peer_request())
+            if envelope.name == "dcc-sender"
+        )
+        assert envelope.mode == "bypass"
+        assert envelope.body == "INTEGRATION_PING"
+        harness.fake_server.assert_clean(harness.deny_proxy)
+
+
+@pytest.mark.claude_code_integration
+async def test_receiver_without_accept_holds_mismatched_inbound_message(
+    tmp_path: Path,
+    integration_artifact_dir: Path,
+) -> None:
+    async with IntegrationHarness(
+        tmp_path,
+        integration_artifact_dir,
+        sender=prompting_sender(allow_send_message=True),
+        receiver=bypass_receiver(inbound_accept=False),
+        sender_steps=held_message_steps(),
+        receiver_steps=[],
+    ) as harness:
+        await harness.wait_ready()
+        receiver_requests = len(harness.receiver_scenario.history)
+        await harness.sender.send_user("Start the held-message test.")
+        await harness.wait_for_route_count(1)
+
+        route = harness.broker.route_events[0]
+        assert route.source_mode == "prompting"
+        assert route.target_session == "dcc-receiver"
+        await harness.assert_receiver_request_count_stable(
+            receiver_requests,
+            duration=1.5,
+        )
+        assert not harness.receiver_saw_inbound("HELD_MESSAGE")
+        assert harness.receiver.returncode is None
+        harness.deny_proxy.assert_only_expected_attempts()
+
+
+def test_diagnostics_redact_all_dummy_credentials() -> None:
+    diagnostic = redact(
+        {
+            "authorization": "Bearer broker-secret",
+            "headers": {"x-api-key": "sender-test-token"},
+            "nested": {"token": "receiver-broker-token"},
+            "message": "INTEGRATION_PING",
+        }
+    )
+    serialized = json.dumps(diagnostic)
+
+    assert "broker-secret" not in serialized
+    assert "sender-test-token" not in serialized
+    assert "receiver-broker-token" not in serialized
+    assert "INTEGRATION_PING" in serialized
+
+
+@pytest.mark.claude_code_integration
+async def test_failure_writes_diagnostics_and_cleans_owned_resources(
+    tmp_path: Path,
+    integration_artifact_dir: Path,
+) -> None:
+    harness = IntegrationHarness(
+        tmp_path,
+        integration_artifact_dir,
+        sender=prompting_sender(allow_send_message=True),
+        receiver=prompting_receiver(inbound_accept=True),
+        sender_steps=[],
+        receiver_steps=[],
+    )
+
+    with pytest.raises(AssertionError, match="forced harness failure"):
+        async with harness:
+            await harness.wait_ready()
+            raise AssertionError("forced harness failure")
+
+    assert harness.sender.returncode is not None
+    assert harness.receiver.returncode is not None
+    assert all(task.done() for task in harness.bridge_tasks)
+    assert harness.owned_registry_paths() == []
+    assert harness.owned_socket_paths() == []
+    diagnostics = list(integration_artifact_dir.glob("*.json"))
+    assert len(diagnostics) == 1
+    payload = json.loads(diagnostics[0].read_text())
+    assert payload["last_satisfied_condition"] == "receiver remote peer creation"
