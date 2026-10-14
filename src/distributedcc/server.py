@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import hmac
 import json
+import logging
 import os
 from dataclasses import dataclass
 from http import HTTPStatus
@@ -42,6 +43,10 @@ class TokenAuthenticator:
         ):
             raise ValueError("node token configuration must be a string map")
         return cls(value)
+
+    @property
+    def node_count(self) -> int:
+        return len(self._tokens)
 
     def authenticate(self, authorization: str | None) -> str | None:
         if authorization is None or not authorization.startswith("Bearer "):
@@ -84,15 +89,18 @@ class Broker:
             if node_id in self._connections:
                 raise BrokerError(f"node {node_id!r} is already connected")
             self._connections[node_id] = connection
+        logging.info("node connected: %s", node_id)
 
     async def detach(self, node_id: str) -> None:
         async with self._lock:
-            self._connections.pop(node_id, None)
+            connection = self._connections.pop(node_id, None)
             self._sessions = {
                 name: session
                 for name, session in self._sessions.items()
                 if session.node_id != node_id
             }
+        if connection is not None:
+            logging.info("node disconnected: %s", node_id)
 
     async def publish(
         self,
@@ -122,6 +130,7 @@ class Broker:
                 }
             )
             self._sessions = retained
+        logging.info("node %s published %d sessions", node_id, len(advertisements))
 
     async def remote_sessions(self, node_id: str) -> list[dict[str, str]]:
         async with self._lock:
@@ -179,6 +188,14 @@ class Broker:
                 "body": event.body,
             }
         await connection.send_json(delivery)
+        logging.info(
+            "routed message %s from %s/%s to %s/%s",
+            event.id,
+            node_id,
+            event.source_session,
+            target.node_id,
+            event.target_session,
+        )
 
 
 def make_process_request(authenticator: TokenAuthenticator):
@@ -187,6 +204,10 @@ def make_process_request(authenticator: TokenAuthenticator):
             return connection.respond(HTTPStatus.OK, "OK\n")
         node_id = authenticator.authenticate(request.headers.get("Authorization"))
         if node_id is None:
+            logging.warning(
+                "rejected unauthorized WebSocket handshake from %s",
+                connection.remote_address,
+            )
             return connection.respond(HTTPStatus.UNAUTHORIZED, "Unauthorized\n")
         return None
 
@@ -218,6 +239,7 @@ async def handle_websocket(
                 return
             await _handle_client_message(node_id, raw, broker, connection)
     except BrokerError as error:
+        logging.warning("broker rejected node %s: %s", node_id, error)
         await connection.send_json({"type": "error", "message": str(error)})
     finally:
         if attached:
@@ -243,6 +265,7 @@ async def _handle_client_message(
             return
         raise ProtocolError("unsupported message type")
     except (json.JSONDecodeError, ProtocolError, BrokerError) as error:
+        logging.warning("broker rejected message from %s: %s", node_id, error)
         await connection.send_json({"type": "error", "message": str(error)})
 
 
@@ -262,8 +285,15 @@ async def run_server() -> None:
         ping_interval=20,
         ping_timeout=20,
     ) as server:
+        logging.info(
+            "broker listening on ws://%s:%d with %d configured nodes",
+            host,
+            port,
+            authenticator.node_count,
+        )
         await server.serve_forever()
 
 
 def main() -> None:
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     asyncio.run(run_server())

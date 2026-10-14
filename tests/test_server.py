@@ -13,6 +13,18 @@ class FakeConnection:
 
 
 @pytest.mark.asyncio
+async def test_logs_connection_lifecycle_without_secrets(caplog) -> None:
+    broker = Broker()
+
+    with caplog.at_level("INFO"):
+        await broker.attach("andre", FakeConnection())
+        await broker.detach("andre")
+
+    assert "node connected: andre" in caplog.text
+    assert "node disconnected: andre" in caplog.text
+
+
+@pytest.mark.asyncio
 async def test_routes_only_from_session_owned_by_connection() -> None:
     broker = Broker()
     andre = FakeConnection()
