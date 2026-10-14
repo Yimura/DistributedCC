@@ -5,30 +5,34 @@ from pathlib import Path
 
 import aiohttp
 import pytest
-from claude_code_integration_support import (
-    ClaudeLaunchOptions,
-    ClaudeProcess,
-    DenyingProxy,
-    EgressAttempt,
-    IntegrationHarness,
-    ReadinessServer,
+from claude_code_fake_api import (
     ScriptedAnthropicServer,
     ScriptedScenario,
     ScriptStep,
-    bypass_receiver,
-    bypass_sender,
     denial_steps,
     event_name,
     held_message_steps,
     peer_envelopes,
-    prompting_receiver,
-    prompting_sender,
     receiver_round_trip_steps,
-    redact,
     sender_round_trip_steps,
     text_response,
     tool_response,
     tool_result_is_denied,
+)
+from claude_code_integration_support import (
+    IntegrationHarness,
+    bypass_receiver,
+    bypass_sender,
+    prompting_receiver,
+    prompting_sender,
+)
+from claude_code_process import (
+    ClaudeLaunchOptions,
+    ClaudeProcess,
+    DenyingProxy,
+    EgressAttempt,
+    ReadinessServer,
+    redact,
     validate_version,
     wait_until,
 )
