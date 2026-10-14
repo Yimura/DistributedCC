@@ -1,12 +1,39 @@
+# Python bytecode and build output
 __pycache__/
 *.py[cod]
+*.egg-info/
+build/
+dist/
+
+# Virtual environments
 .venv/
+venv/
+
+# Test, lint, type-check, and coverage output
 .pytest_cache/
 .ruff_cache/
 .mypy_cache/
+.pyright/
+.tox/
+.nox/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
+
+# Local configuration and secrets
 .env
+.env.*
+!.env.example
 *.pem
 *.key
+
+# Runtime state
 runtime/
+
+# Editors and operating systems
+.idea/
+.vscode/
+*.swp
+.DS_Store
+Thumbs.db

@@ -1,6 +1,6 @@
 services:
   broker:
-    build: .
+    image: ${DCC_IMAGE:-ghcr.io/yimura/distributedcc:latest}
     command: distributedcc-server
     environment:
       DCC_NODE_TOKENS: ${DCC_NODE_TOKENS:?Set JSON token-to-node mapping}

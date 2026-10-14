@@ -1,6 +1,6 @@
 services:
   bridge:
-    build: .
+    image: ${DCC_IMAGE:-ghcr.io/yimura/distributedcc:latest}
     command: distributedcc-bridge
     pid: host
     user: "${DCC_UID:?Set host user ID}:${DCC_GID:?Set host group ID}"

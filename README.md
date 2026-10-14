@@ -1,57 +1,70 @@
 # DistributedCC
 
-DistributedCC bridges Claude Code 2.1.294 sessions across machines while preserving `ListAgents`, native `SendMessage`, and peer-origin event delivery.
+DistributedCC bridges Claude Code sessions across Linux machines while preserving native `ListAgents`, `SendMessage`, and peer-origin event delivery.
 
-Architecture baseline: [`docs/architecture.md`](docs/architecture.md).
+> [!IMPORTANT]
+> DistributedCC is Linux-only. It has only been built and tested on Linux. The bridge depends on Linux `/proc`, Unix-domain sockets, `SO_PEERCRED`, host PID namespaces, and `/run/user/<uid>`.
 
 > [!WARNING]
-> DistributedCC uses private Claude Code session-registry and Unix-socket protocols. It fails closed on unsupported versions, but Claude Code updates may still require bridge changes.
+> DistributedCC uses private Claude Code 2.1.294 session-registry and Unix-socket protocols. It fails closed on unsupported versions, but Claude Code updates may require bridge changes.
+
+Architecture and trust boundaries: [`docs/architecture.md`](docs/architecture.md).
 
 ## How it works
 
-Each laptop runs dedicated bridge client with unique pre-shared secret. Clients connect to central broker over WSS. Broker maps each secret to fixed node identity and routes messages by globally unique Claude session name.
+Each machine runs a bridge client with its own pre-shared secret. Clients connect to a central broker over secure WebSockets. The broker maps each secret to a fixed node identity and routes messages by globally unique Claude session name.
 
-Bridge mirrors remote sessions into local `~/.claude/sessions` and `/run/user/<uid>/cc-socks`. Remote sessions then appear in `ListAgents`. Native `SendMessage` reaches virtual socket, crosses broker, and enters target Claude session as peer-origin event.
+The bridge mirrors remote sessions into local `~/.claude/sessions` and `/run/user/<uid>/cc-socks`. Remote sessions then appear in `ListAgents`. Native `SendMessage` reaches the virtual socket, crosses the broker, and enters the target Claude session as a peer-origin event.
 
-No lease service exists in MVP. `yrrp-release-manager` remains coordination authority.
+DistributedCC does not provide lease management. Agents such as `yrrp-release-manager` remain responsible for coordination and authorization.
 
 ## Requirements
 
-- Linux with Unix peer credentials and `/proc`
+- Linux with `/proc`, Unix peer credentials, and `/run/user/<uid>`
 - Docker Engine with Compose
-- public DNS name pointing to broker host
-- inbound TCP 80 and 443 to broker host
-- Claude Code 2.1.294 on both laptops
-- globally unique published session names
+- Claude Code 2.1.294 on every client machine
+- globally unique published Claude session names
+- a broker host with a public DNS name and inbound TCP ports 80 and 443
 
-## Create laptop secrets
+Published container image:
 
-Create separate secret for each laptop:
+```text
+ghcr.io/yimura/distributedcc:latest
+```
+
+## Deploy the broker
+
+Clone this repository on the public broker host:
+
+```bash
+git clone https://github.com/Yimura/DistributedCC.git
+cd DistributedCC
+cp .env.example .env
+```
+
+Generate one secret for each client machine:
 
 ```bash
 openssl rand -hex 32
 openssl rand -hex 32
 ```
 
-Server maps secrets to node identities:
+Edit `.env` and configure the public domain plus a distinct token for each node:
 
 ```dotenv
+DCC_IMAGE=ghcr.io/yimura/distributedcc:latest
+DCC_DOMAIN=dcc.example.com
 DCC_NODE_TOKENS={"andre":"<andre-secret>","friend":"<friend-secret>"}
 ```
 
-Do not reuse one secret across laptops. Do not put secrets in Git.
-
-## Run public broker
-
-Copy `.env.example` to `.env`, set `DCC_DOMAIN` and `DCC_NODE_TOKENS`, then run:
+Point the domain's DNS record at the broker host, then start the stack:
 
 ```bash
-docker compose -f compose.server.yaml up -d --build
+docker compose -f compose.server.yaml pull
+docker compose -f compose.server.yaml up -d
 ```
 
-Caddy obtains TLS certificate and exposes broker at `wss://<DCC_DOMAIN>`.
-
-Health check:
+Caddy obtains the TLS certificate and exposes the broker at `wss://<DCC_DOMAIN>`. Verify it:
 
 ```bash
 curl https://<DCC_DOMAIN>/healthz
@@ -63,72 +76,81 @@ Expected response:
 OK
 ```
 
-## Run bridge on release-manager laptop
+## Set up a client machine
 
-Start dedicated manager session:
+Start Claude Code with a globally unique name. For a release manager:
 
 ```bash
 claude --agent yrrp-release-manager --name yrrp-release-manager
 ```
 
-Set bridge environment:
+For another contributor session:
+
+```bash
+claude --name friend-feature
+```
+
+Clone this repository on the client and create its local environment file:
+
+```bash
+git clone https://github.com/Yimura/DistributedCC.git
+cd DistributedCC
+cp .env.example .env
+```
+
+Edit `.env` with this machine's token, exact Claude session name, and host user and group IDs:
 
 ```dotenv
+DCC_IMAGE=ghcr.io/yimura/distributedcc:latest
 DCC_SERVER_URL=wss://dcc.example.com
-DCC_TOKEN=<andre-secret>
-DCC_PUBLISH_SESSIONS=yrrp-release-manager
+DCC_TOKEN=<this-machine-secret>
+DCC_PUBLISH_SESSIONS=friend-feature
 DCC_UID=1000
 DCC_GID=1000
 ```
 
-Use actual IDs from:
+Get the correct IDs with:
 
 ```bash
 id -u
 id -g
 ```
 
-Run bridge:
+Start the bridge:
 
 ```bash
-docker compose -f compose.bridge.yaml up -d --build
+docker compose -f compose.bridge.yaml pull
+docker compose -f compose.bridge.yaml up -d
 ```
 
-## Run bridge on contributor laptop
+The bridge container runs with the host PID namespace and host UID/GID. It also mounts `~/.claude/sessions` and `/run/user/<uid>/cc-socks`. These permissions let Claude Code validate virtual peer PIDs, socket ownership, and process start tokens.
 
-Contributor starts named Claude session, for example:
+After two bridges connect, each published remote session appears in native `ListAgents`. Either session can use native `SendMessage`; an idle recipient starts a turn, while a busy recipient receives the event between tool calls.
 
-```bash
-claude --name friend-feature
-```
+## Publish more than one local session
 
-Contributor bridge uses its own secret and publishes that exact name:
+Start each Claude Code session with a unique name, then use a comma-separated list:
 
 ```dotenv
-DCC_SERVER_URL=wss://dcc.example.com
-DCC_TOKEN=<friend-secret>
-DCC_PUBLISH_SESSIONS=friend-feature
-DCC_UID=1000
-DCC_GID=1000
+DCC_PUBLISH_SESSIONS=session-one,session-two
 ```
 
-Then run:
+Restart the bridge after changing the list:
 
 ```bash
-docker compose -f compose.bridge.yaml up -d --build
+docker compose -f compose.bridge.yaml up -d
 ```
 
-After both bridges connect:
+## Build from source
 
-- contributor `ListAgents` shows `yrrp-release-manager`;
-- manager `ListAgents` shows `friend-feature`;
-- either session can use native `SendMessage`;
-- idle recipient starts turn immediately;
-- busy recipient receives event between tool calls.
+Build a local image and tell Compose to use it:
 
-## Local development
+```bash
+docker build -t distributedcc:dev .
+DCC_IMAGE=distributedcc:dev docker compose -f compose.bridge.yaml up -d
+```
 
-Install and test:
+For Python development:
 
 ```bash
 uv sync --extra dev
@@ -136,21 +158,25 @@ uv run --extra dev pytest -q
 uv run --extra dev ruff check .
 ```
 
-Run broker without Caddy for local testing:
+Run the broker without Caddy only for trusted local tests:
 
 ```bash
 export DCC_NODE_TOKENS='{"andre":"andre-secret","friend":"friend-secret"}'
 uv run distributedcc-server
 ```
 
-Use `ws://127.0.0.1:8765` only for trusted local tests. Public deployments must use WSS through Caddy.
+Use `ws://127.0.0.1:8765` only for local testing. Public deployments must use WSS through Caddy.
 
 ## Stop and clean up
 
-Stop bridge cleanly:
+Stop a bridge cleanly:
 
 ```bash
 docker compose -f compose.bridge.yaml down
 ```
 
-Bridge removes virtual session records and sockets during normal shutdown. If container is killed, Claude Code ignores stale records once worker PID and process start token no longer match.
+The bridge removes owned virtual session records and sockets during normal shutdown. If the container is killed, Claude Code ignores stale records after the worker PID or process start token no longer matches.
+
+## Container publishing
+
+[GitHub Actions](.github/workflows/docker-publish.yaml) builds the shared broker and bridge image on every push to `main`. It publishes `latest` and commit-SHA tags to GitHub Container Registry. OCI labels and tags come from GitHub repository and commit metadata.
