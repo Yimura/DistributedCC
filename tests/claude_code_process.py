@@ -61,16 +61,42 @@ SENSITIVE_KEYS = re.compile(
 )
 
 
-def redact(value: object) -> object:
+def redact(value: object, known_secrets: set[str] | None = None) -> object:
+    secrets = set() if known_secrets is None else set(known_secrets)
+    _collect_sensitive_values(value, secrets)
+    return _redact_value(value, secrets)
+
+
+def _collect_sensitive_values(value: object, secrets: set[str]) -> None:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if SENSITIVE_KEYS.search(str(key)) and isinstance(item, str):
+                secrets.add(item)
+                if item.startswith("Bearer "):
+                    secrets.add(item.removeprefix("Bearer "))
+            _collect_sensitive_values(item, secrets)
+    elif isinstance(value, (list, tuple)):
+        for item in value:
+            _collect_sensitive_values(item, secrets)
+
+
+def _redact_value(value: object, secrets: set[str]) -> object:
     if isinstance(value, dict):
         return {
-            str(key): "<redacted>" if SENSITIVE_KEYS.search(str(key)) else redact(item)
+            str(key): (
+                "<redacted>"
+                if SENSITIVE_KEYS.search(str(key))
+                else _redact_value(item, secrets)
+            )
             for key, item in value.items()
         }
     if isinstance(value, list):
-        return [redact(item) for item in value]
+        return [_redact_value(item, secrets) for item in value]
     if isinstance(value, tuple):
-        return tuple(redact(item) for item in value)
+        return tuple(_redact_value(item, secrets) for item in value)
+    if isinstance(value, str):
+        for secret in sorted((item for item in secrets if item), key=len, reverse=True):
+            value = value.replace(secret, "<redacted>")
     return value
 
 
@@ -167,6 +193,10 @@ class ClaudeProcess:
                 stderr=slave_fd,
                 start_new_session=True,
             )
+        except BaseException:
+            os.close(master_fd)
+            self.master_fd = None
+            raise
         finally:
             os.close(slave_fd)
         self.reader_task = asyncio.create_task(self._read_terminal())

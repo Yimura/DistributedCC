@@ -3,6 +3,7 @@ import os
 from pathlib import Path
 
 import aiohttp
+import claude_code_process as process_module
 import pytest
 from claude_code_fake_api import (
     ScriptedAnthropicServer,
@@ -316,6 +317,7 @@ async def test_receiver_without_accept_holds_mismatched_inbound_message(
         receiver_requests = len(harness.receiver_scenario.history)
         await harness.sender.send_user("Start the held-message test.")
         await harness.wait_for_route_count(1)
+        await harness.wait_for_sender_continuation()
 
         route = harness.broker.route_events[0]
         assert route.source_mode == "prompting"
@@ -326,7 +328,7 @@ async def test_receiver_without_accept_holds_mismatched_inbound_message(
         )
         assert not harness.receiver_saw_inbound("HELD_MESSAGE")
         assert harness.receiver.returncode is None
-        harness.assert_egress_policy()
+        harness.assert_clean()
 
 
 def test_diagnostics_redact_all_dummy_credentials() -> None:
@@ -335,6 +337,8 @@ def test_diagnostics_redact_all_dummy_credentials() -> None:
             "authorization": "Bearer broker-secret",
             "headers": {"x-api-key": "sender-test-token"},
             "nested": {"token": "receiver-broker-token"},
+            "terminal": "failed while using sender-test-token",
+            "error": "broker-secret was rejected",
             "message": "INTEGRATION_PING",
         }
     )
@@ -344,6 +348,71 @@ def test_diagnostics_redact_all_dummy_credentials() -> None:
     assert "sender-test-token" not in serialized
     assert "receiver-broker-token" not in serialized
     assert "INTEGRATION_PING" in serialized
+
+
+async def test_spawn_failure_closes_pty_master(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    descriptors: dict[str, int] = {}
+    real_openpty = process_module.pty.openpty
+
+    def tracked_openpty() -> tuple[int, int]:
+        master_fd, slave_fd = real_openpty()
+        descriptors["master"] = master_fd
+        return master_fd, slave_fd
+
+    async def fail_spawn(*args: object, **kwargs: object) -> None:
+        raise OSError("forced spawn failure")
+
+    monkeypatch.setattr(process_module.pty, "openpty", tracked_openpty)
+    monkeypatch.setattr(process_module.asyncio, "create_subprocess_exec", fail_spawn)
+    process = ClaudeProcess(
+        tmp_path / "spawn-failure",
+        ClaudeLaunchOptions(
+            name="spawn-failure",
+            session_id="44444444-4444-4444-8444-444444444444",
+            api_key="spawn-token",
+            base_url="http://127.0.0.1:9",
+            permission_mode="dontAsk",
+            allow_send_message=False,
+            inbound_accept=False,
+        ),
+    )
+
+    with pytest.raises(OSError, match="forced spawn failure"):
+        await process.start()
+    with pytest.raises(OSError):
+        os.fstat(descriptors["master"])
+
+
+async def test_setup_failure_cleans_resources_and_writes_diagnostics(
+    tmp_path: Path,
+    integration_artifact_dir: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    async def fail_server_start(server: ScriptedAnthropicServer) -> None:
+        raise OSError("forced API startup failure")
+
+    monkeypatch.setattr(ScriptedAnthropicServer, "__aenter__", fail_server_start)
+    harness = IntegrationHarness(
+        tmp_path,
+        integration_artifact_dir,
+        sender=prompting_sender(allow_send_message=True),
+        receiver=prompting_receiver(inbound_accept=True),
+        sender_steps=[],
+        receiver_steps=[],
+    )
+
+    with pytest.raises(OSError, match="forced API startup failure"):
+        async with harness:
+            pytest.fail("setup failure should prevent context entry")
+
+    assert harness.deny_proxy.server is not None
+    assert not harness.deny_proxy.server.is_serving()
+    diagnostics = list(integration_artifact_dir.glob("*.json"))
+    assert len(diagnostics) == 1
+    assert "forced API startup failure" in diagnostics[0].read_text()
 
 
 @pytest.mark.claude_code_integration

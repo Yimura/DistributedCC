@@ -6,6 +6,7 @@ import inspect
 import json
 import os
 from collections.abc import Awaitable, Callable
+from contextlib import AsyncExitStack
 from pathlib import Path
 
 from claude_code_fake_api import (
@@ -131,20 +132,28 @@ class IntegrationHarness:
         self.sender: ClaudeProcess
         self.receiver: ClaudeProcess
         self.last_satisfied_condition = "not started"
+        self._resource_stack: AsyncExitStack | None = None
 
     async def __aenter__(self) -> IntegrationHarness:
-        await self.deny_proxy.__aenter__()
-        await self.fake_server.__aenter__()
-        self.sender = self._make_process("sender", self.sender_options)
-        self.receiver = self._make_process("receiver", self.receiver_options)
+        self._resource_stack = AsyncExitStack()
         try:
+            await self._resource_stack.enter_async_context(self.deny_proxy)
+            await self._resource_stack.enter_async_context(self.fake_server)
+            self.sender = self._make_process("sender", self.sender_options)
+            self.receiver = self._make_process("receiver", self.receiver_options)
             await self._start_broker()
             async with asyncio.TaskGroup() as group:
                 group.create_task(self.sender.start())
                 group.create_task(self.receiver.start())
             self._start_bridges()
-        except BaseException:
-            await self.cleanup()
+        except BaseException as error:
+            try:
+                self.write_diagnostics(error)
+            except BaseException as diagnostic_error:
+                error.add_note(f"diagnostic write failed: {diagnostic_error!r}")
+            cleanup_errors = await self.cleanup()
+            for cleanup_error in cleanup_errors:
+                error.add_note(f"cleanup failed: {cleanup_error!r}")
             raise
         return self
 
@@ -338,19 +347,22 @@ class IntegrationHarness:
         if self.broker_server is not None:
             self.broker_server.close()
             await self._collect_cleanup(errors, self.broker_server.wait_closed())
-        await self._collect_cleanup(errors, self.fake_server.__aexit__(None, None, None))
-        await self._collect_cleanup(errors, self.deny_proxy.__aexit__(None, None, None))
+        if self._resource_stack is not None:
+            await self._collect_cleanup(errors, self._resource_stack.aclose())
+            self._resource_stack = None
         return errors
 
     def write_diagnostics(self, error: BaseException) -> None:
+        processes = {
+            name: self._process_diagnostic(process)
+            for name in ("sender", "receiver")
+            if (process := getattr(self, name, None)) is not None
+        }
         payload = {
             "error": repr(error),
             "claude_version": ClaudeProcess.resolve_version(),
             "last_satisfied_condition": self.last_satisfied_condition,
-            "processes": {
-                "sender": self._process_diagnostic(self.sender),
-                "receiver": self._process_diagnostic(self.receiver),
-            },
+            "processes": processes,
             "fake_api_failures": self.fake_server.failures,
             "fake_api_history": {
                 "sender": [record.body for record in self.sender_scenario.history],
@@ -361,8 +373,14 @@ class IntegrationHarness:
                 dataclasses.asdict(attempt) for attempt in self.deny_proxy.attempts
             ],
         }
+        known_secrets = {
+            self.sender_options.api_key,
+            self.receiver_options.api_key,
+            "sender-broker-token",
+            "receiver-broker-token",
+        }
         path = self.artifact_dir / "integration-failure.json"
-        path.write_text(json.dumps(redact(payload), indent=2))
+        path.write_text(json.dumps(redact(payload, known_secrets), indent=2))
 
     def _make_process(self, side: str, options: ClaudeLaunchOptions) -> ClaudeProcess:
         configured = dataclasses.replace(
