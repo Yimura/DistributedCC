@@ -47,6 +47,7 @@ def test_client_event_schema_round_trip() -> None:
             "type": "route",
             "id": "60cb8e60-1b45-4cf0-a88e-6b6b8b98e6bf",
             "source_session": "feature-owner",
+            "source_mode": "bypass",
             "target_session": "yrrp-release-manager",
             "body": "FEATURE_READY",
         }
@@ -56,6 +57,7 @@ def test_client_event_schema_round_trip() -> None:
 
     assert isinstance(message, PeerEvent)
     assert message.source_session == "feature-owner"
+    assert message.source_mode == "bypass"
     assert message.target_session == "yrrp-release-manager"
 
 
@@ -65,13 +67,30 @@ def test_client_event_rejects_unknown_fields() -> None:
             "type": "route",
             "id": "60cb8e60-1b45-4cf0-a88e-6b6b8b98e6bf",
             "source_session": "feature-owner",
+            "source_mode": "bypass",
             "target_session": "yrrp-release-manager",
             "body": "FEATURE_READY",
-            "from_mode": "bypass",
+            "forged": True,
         }
     )
 
     with pytest.raises(ProtocolError, match="unknown fields"):
+        decode_client_message(raw)
+
+
+def test_client_event_rejects_invalid_source_mode() -> None:
+    raw = json.dumps(
+        {
+            "type": "route",
+            "id": "60cb8e60-1b45-4cf0-a88e-6b6b8b98e6bf",
+            "source_session": "feature-owner",
+            "source_mode": "unattested",
+            "target_session": "yrrp-release-manager",
+            "body": "FEATURE_READY",
+        }
+    )
+
+    with pytest.raises(ProtocolError, match="source mode"):
         decode_client_message(raw)
 
 
@@ -81,6 +100,7 @@ def test_client_event_rejects_oversized_message() -> None:
             "type": "route",
             "id": "60cb8e60-1b45-4cf0-a88e-6b6b8b98e6bf",
             "source_session": "feature-owner",
+            "source_mode": "prompting",
             "target_session": "yrrp-release-manager",
             "body": "x" * MAX_MESSAGE_BYTES,
         }

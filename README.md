@@ -6,7 +6,7 @@ DistributedCC bridges Claude Code sessions across Linux machines while preservin
 > DistributedCC is Linux-only. It has only been built and tested on Linux. The bridge depends on Linux `/proc`, Unix-domain sockets, `SO_PEERCRED`, host PID namespaces, and `/run/user/<uid>`.
 
 > [!WARNING]
-> DistributedCC uses private Claude Code session-registry and Unix-socket protocols. Version 2.1.294 is tested. Other valid Claude Code versions produce a warning but remain usable; protocol changes may still break messaging.
+> DistributedCC uses private Claude Code session-registry and Unix-socket protocols. Version 2.1.296 is tested. Other valid Claude Code versions produce a warning but remain usable; protocol changes may still break messaging.
 
 Architecture and trust boundaries: [`docs/architecture.md`](docs/architecture.md).
 
@@ -16,13 +16,13 @@ Each machine runs a bridge client with its own pre-shared secret. Clients connec
 
 The bridge mirrors remote sessions into local `~/.claude/sessions` and `/run/user/<uid>/cc-socks`. Remote sessions then appear in `ListAgents`. Native `SendMessage` reaches the virtual socket, crosses the broker, and enters the target Claude session as a peer-origin event.
 
-DistributedCC does not provide lease management. Agents such as `yrrp-release-manager` remain responsible for coordination and authorization.
+DistributedCC does not provide durable delivery or action acknowledgements. Agents such as `yrrp-release-manager` remain responsible for coordination and authorization.
 
 ## Requirements
 
 - Linux with `/proc`, Unix peer credentials, and `/run/user/<uid>`
 - Docker Engine with Compose
-- Claude Code 2.1.294 tested; other versions allowed with a compatibility warning
+- Claude Code 2.1.296 tested; other versions allowed with a compatibility warning
 - globally unique published Claude session names
 - an external reverse proxy that terminates TLS and supports WebSocket upgrades
 
@@ -143,9 +143,20 @@ docker compose -f compose.bridge.yaml up -d
 
 The bridge container runs with the host PID namespace and host UID/GID. It also mounts `~/.claude/sessions` and `/run/user/<uid>/cc-socks`. These permissions let Claude Code validate virtual peer PIDs, socket ownership, and process start tokens.
 
+The bridge connects even when none of its configured sessions are running. It publishes an empty snapshot, watches local Claude Code sessions, and announces each configured session when it appears. Stopping a session removes its advertisement without disconnecting the bridge.
+
 After two bridges connect, each published remote session appears in native `ListAgents`. Either session can use native `SendMessage`; an idle recipient starts a turn, while a busy recipient receives the event between tool calls.
 
 Every session that sends or receives through the broker must appear in its bridge's `DCC_PUBLISH_SESSIONS`. Publication is bidirectional. An unpublished session cannot receive remote messages, and the broker rejects messages claiming it as their source.
+
+Claude Code applies its normal inbound permission-mode parity checks to relayed messages. A mismatched message is held for approval. For a dedicated trusted unattended receiver only, start that session with:
+
+```sh
+claude --settings '{"crossSessionInbound":"accept","isolatePeerMachines":true}' \
+  --agent yrrp-release-manager --name yrrp-release-manager
+```
+
+`crossSessionInbound: "accept"` delivers admitted peer messages but does not approve tool calls. Keep this setting session-scoped instead of enabling it globally.
 
 ## Publish more than one local session
 

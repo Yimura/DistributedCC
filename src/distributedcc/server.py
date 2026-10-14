@@ -12,9 +12,12 @@ from http import HTTPStatus
 from typing import Protocol
 
 from websockets.asyncio.server import ServerConnection, serve
+from websockets.exceptions import ConnectionClosedError
 
 from distributedcc.protocol import (
     MAX_MESSAGE_BYTES,
+    SUPERSEDED_CLOSE_CODE,
+    SUPERSEDED_CLOSE_REASON,
     PeerEvent,
     ProtocolError,
     SessionAdvertisement,
@@ -63,6 +66,8 @@ class TokenAuthenticator:
 class Connection(Protocol):
     async def send_json(self, message: dict[str, object]) -> None: ...
 
+    async def close(self, code: int, reason: str) -> None: ...
+
 
 class WebSocketConnection:
     def __init__(self, websocket: ServerConnection) -> None:
@@ -70,6 +75,9 @@ class WebSocketConnection:
 
     async def send_json(self, message: dict[str, object]) -> None:
         await self._websocket.send(json.dumps(message, separators=(",", ":")))
+
+    async def close(self, code: int, reason: str) -> None:
+        await self._websocket.close(code=code, reason=reason)
 
 
 @dataclass(frozen=True, slots=True)
@@ -82,34 +90,63 @@ class Broker:
     def __init__(self) -> None:
         self._connections: dict[str, Connection] = {}
         self._sessions: dict[str, PublishedSession] = {}
+        self._retirement_tasks: set[asyncio.Task[None]] = set()
         self._lock = asyncio.Lock()
 
     async def attach(self, node_id: str, connection: Connection) -> None:
         async with self._lock:
-            if node_id in self._connections:
-                raise BrokerError(f"node {node_id!r} is already connected")
+            previous = self._connections.get(node_id)
             self._connections[node_id] = connection
-        logging.info("node connected: %s", node_id)
+            self._remove_sessions_for(node_id)
+        if previous is None or previous is connection:
+            logging.info("node connected: %s", node_id)
+            return
+        self._retire_replaced_connection(node_id, previous)
+        logging.info("node connection replaced: %s", node_id)
 
-    async def detach(self, node_id: str) -> None:
+    def _retire_replaced_connection(self, node_id: str, connection: Connection) -> None:
+        task = asyncio.create_task(
+            self._close_replaced_connection(node_id, connection),
+            name=f"dcc-retire-{node_id}",
+        )
+        self._retirement_tasks.add(task)
+        task.add_done_callback(self._retirement_tasks.discard)
+
+    @staticmethod
+    async def _close_replaced_connection(node_id: str, connection: Connection) -> None:
+        try:
+            await connection.close(SUPERSEDED_CLOSE_CODE, SUPERSEDED_CLOSE_REASON)
+        except Exception as error:
+            logging.warning("failed to close replaced node %s: %s", node_id, error)
+
+    async def detach(self, node_id: str, connection: Connection) -> bool:
         async with self._lock:
-            connection = self._connections.pop(node_id, None)
-            self._sessions = {
-                name: session
-                for name, session in self._sessions.items()
-                if session.node_id != node_id
-            }
-        if connection is not None:
-            logging.info("node disconnected: %s", node_id)
+            if self._connections.get(node_id) is not connection:
+                return False
+            del self._connections[node_id]
+            self._remove_sessions_for(node_id)
+        logging.info("node disconnected: %s", node_id)
+        return True
+
+    def _remove_sessions_for(self, node_id: str) -> None:
+        self._sessions = {
+            name: session
+            for name, session in self._sessions.items()
+            if session.node_id != node_id
+        }
+
+    def _require_current(self, node_id: str, connection: Connection) -> None:
+        if self._connections.get(node_id) is not connection:
+            raise BrokerError(f"node {node_id!r} has a stale connection")
 
     async def publish(
         self,
         node_id: str,
+        connection: Connection,
         advertisements: list[SessionAdvertisement],
     ) -> None:
         async with self._lock:
-            if node_id not in self._connections:
-                raise BrokerError(f"node {node_id!r} is not connected")
+            self._require_current(node_id, connection)
             incoming_names = [advertisement.name for advertisement in advertisements]
             if len(incoming_names) != len(set(incoming_names)):
                 raise BrokerError("publication contains duplicate session names")
@@ -118,18 +155,13 @@ class Broker:
                 if owner is not None and owner.node_id != node_id:
                     raise BrokerError(f"session {name!r} is already published")
 
-            retained = {
-                name: session
-                for name, session in self._sessions.items()
-                if session.node_id != node_id
-            }
-            retained.update(
+            self._remove_sessions_for(node_id)
+            self._sessions.update(
                 {
                     advertisement.name: PublishedSession(node_id, advertisement)
                     for advertisement in advertisements
                 }
             )
-            self._sessions = retained
         logging.info("node %s published %d sessions", node_id, len(advertisements))
 
     async def remote_sessions(self, node_id: str) -> list[dict[str, str]]:
@@ -164,8 +196,14 @@ class Broker:
             return_exceptions=True,
         )
 
-    async def route(self, node_id: str, event: PeerEvent) -> None:
+    async def route(
+        self,
+        node_id: str,
+        connection: Connection,
+        event: PeerEvent,
+    ) -> None:
         async with self._lock:
+            self._require_current(node_id, connection)
             source = self._sessions.get(event.source_session)
             if source is None or source.node_id != node_id:
                 raise BrokerError(
@@ -174,8 +212,8 @@ class Broker:
             target = self._sessions.get(event.target_session)
             if target is None:
                 raise BrokerError(f"target session {event.target_session!r} is unavailable")
-            connection = self._connections.get(target.node_id)
-            if connection is None:
+            target_connection = self._connections.get(target.node_id)
+            if target_connection is None:
                 raise BrokerError(f"target node {target.node_id!r} is unavailable")
             delivery = {
                 "type": "deliver",
@@ -183,11 +221,19 @@ class Broker:
                 "source_node": node_id,
                 "source_session": source.advertisement.name,
                 "source_session_id": source.advertisement.session_id,
-                "source_mode": source.advertisement.permission_mode,
+                "source_mode": event.source_mode,
                 "target_session": target.advertisement.name,
+                "target_session_id": target.advertisement.session_id,
                 "body": event.body,
             }
-        await connection.send_json(delivery)
+        try:
+            await target_connection.send_json(delivery)
+        except Exception as error:
+            if await self.detach(target.node_id, target_connection):
+                await self.broadcast_presence()
+            raise BrokerError(
+                f"target session {event.target_session!r} disconnected during delivery"
+            ) from error
         logging.info(
             "routed message %s from %s/%s to %s/%s",
             event.id,
@@ -238,12 +284,13 @@ async def handle_websocket(
                 await websocket.close(code=1003, reason="text messages required")
                 return
             await _handle_client_message(node_id, raw, broker, connection)
+    except ConnectionClosedError as error:
+        logging.warning("abnormal WebSocket close for node %s: %s", node_id, error)
     except BrokerError as error:
         logging.warning("broker rejected node %s: %s", node_id, error)
         await connection.send_json({"type": "error", "message": str(error)})
     finally:
-        if attached:
-            await broker.detach(node_id)
+        if attached and await broker.detach(node_id, connection):
             await broker.broadcast_presence()
 
 
@@ -257,11 +304,11 @@ async def _handle_client_message(
         preview = json.loads(raw)
         message_type = preview.get("type") if isinstance(preview, dict) else None
         if message_type == "publish":
-            await broker.publish(node_id, decode_publish_message(raw))
+            await broker.publish(node_id, connection, decode_publish_message(raw))
             await broker.broadcast_presence()
             return
         if message_type == "route":
-            await broker.route(node_id, decode_client_message(raw))
+            await broker.route(node_id, connection, decode_client_message(raw))
             return
         raise ProtocolError("unsupported message type")
     except (json.JSONDecodeError, ProtocolError, BrokerError) as error:

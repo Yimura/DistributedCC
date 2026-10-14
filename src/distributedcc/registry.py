@@ -9,7 +9,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Literal
 
-TESTED_CLAUDE_CODE_VERSION = "2.1.294"
+TESTED_CLAUDE_CODE_VERSION = "2.1.296"
 SUPPORTED_PEER_PROTOCOL = 1
 
 

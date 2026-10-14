@@ -17,7 +17,7 @@ MVP provides:
 - transient virtual sessions visible through `ListAgents`;
 - native peer-origin delivery into target agent context;
 - containerized broker and bridge deployments;
-- tested compatibility with Claude Code 2.1.294; other versions continue with a warning.
+- tested compatibility with Claude Code 2.1.296; other versions continue with a warning.
 
 MVP excludes:
 
@@ -37,7 +37,7 @@ MVP excludes:
 
 Broker runs as a plain Python WebSocket service bound to loopback by default. An operator-supplied reverse proxy terminates public TLS and forwards authenticated WSS connections to the broker port.
 
-Broker keeps volatile directory of connected nodes and published sessions. It routes semantic peer events by globally unique session name.
+Broker keeps volatile directory of connected nodes and published sessions. It routes semantic peer events by globally unique session name. A newly authenticated connection replaces an older connection for the same node. Broker activates replacement immediately and retires old transport in an owned background task, so a half-open old socket cannot block recovery. Every publish, route, and detach operation must come from the node's current connection, so stale handlers cannot mutate replacement state. Displaced live bridge recognizes private superseded close code and parks until restart, preventing two bridges sharing one token from evicting each other forever.
 
 Broker does not execute commands, inspect repositories, manage Android devices, or control build infrastructure.
 
@@ -47,7 +47,7 @@ Each laptop runs one dedicated bridge client. Client connects to broker over WSS
 
 Server maps secret to fixed node identity. Client cannot select different node identity. Each laptop gets different secret, so revoking one laptop does not invalidate every client.
 
-Bridge discovers selected local Claude Code sessions from `~/.claude/sessions`. It publishes only live sessions whose PID and process start token are valid and whose peer protocol matches. A Claude Code version mismatch logs a compatibility warning but does not block publication.
+Bridge discovers selected local Claude Code sessions from `~/.claude/sessions`. It keeps broker connection open with zero live sessions and publishes complete snapshots only when selected live sessions change. Each snapshot contains only sessions whose PID and process start token are valid and whose peer protocol matches. Empty snapshot removes stale advertisements without disconnecting node. A Claude Code version mismatch logs a compatibility warning but does not block publication.
 
 ### Virtual peers
 
@@ -60,7 +60,7 @@ Bridge mirrors each remote session as local virtual peer:
 5. Native `SendMessage` connects to worker socket.
 6. Worker verifies socket peer is registered, live, same-user local Claude Code process.
 7. Bridge sends semantic event to broker.
-8. Destination bridge reconstructs canonical peer envelope and injects event into real target session socket.
+8. Destination bridge requires broker-authorized target session ID to match both published snapshot and current live process, then reconstructs canonical peer envelope and injects event into real target session socket.
 
 Bridge removes owned records and sockets when remote session disappears or bridge stops.
 
@@ -85,13 +85,15 @@ Session names must be globally unique. Existing manager keeps exact name `yrrp-r
 
 Broker derives source node from authenticated connection. Source session must be published by that connection. Broker rejects source names not owned by connection.
 
-Destination bridge builds peer envelope from authenticated broker metadata. It does not trust sender-supplied `from`, `from-name`, `from-session`, or `from-mode` fields. Envelope `from` points to source session's local mirrored Unix socket so automatic replies remain native.
+Destination bridge builds peer envelope from broker-validated metadata. It never forwards sender-supplied `from`, `from-name`, `from-session`, or arbitrary envelope text. Source bridge authenticates local sender through Unix peer credentials and live registry matching, extracts canonical event-time `from-mode`, and sends only validated enum. Envelope `from` points to source session's local mirrored Unix socket so automatic replies remain native.
 
 ## Peer-origin behavior
 
 Claude Code wire frame still has `type: "user"`, but receiver converts it to internal peer origin after parsing canonical `<cross-session-message>` envelope. Target model receives cross-session event, not ordinary human prompt.
 
-Permission-mode class travels as `from-mode="bypass"` or `from-mode="prompting"`. Bridge derives class from real sender process invocation. This preserves Claude Code mode-parity policy and avoids untrusted mode assertions.
+Permission-mode class travels as `from-mode="bypass"` or `from-mode="prompting"`. Source bridge reads class from native event at send time; missing class falls back to `prompting`. This preserves runtime mode changes and fails safely at bypass receiver.
+
+Claude Code keeps its default mode-parity policy. Mismatched messages are held for approval. A dedicated trusted unattended receiver can set session-scoped `crossSessionInbound: "accept"`; this delivers peer messages but does not approve receiver tool calls.
 
 Busy target queues event between tool calls. Idle target starts turn. This is same receive behavior as local `SendMessage`.
 
@@ -119,7 +121,7 @@ Bridge fails closed when:
 - remote destination is absent;
 - frame is malformed or oversized.
 
-Broker restart clears presence and in-flight events. Clients reconnect with bounded exponential backoff and republish live sessions.
+Broker restart clears presence and in-flight events. Clients reconnect with bounded exponential backoff and republish current snapshots. Early application failures retain increasing backoff; stable connections reset it. Abrupt transport loss logs one abnormal close and conditionally removes only current connection state.
 
 ## Known limitations
 

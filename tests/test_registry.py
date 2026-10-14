@@ -22,7 +22,7 @@ def write_session(sessions_dir: Path, pid: int, **overrides: object) -> None:
         "cwd": "/workspace",
         "startedAt": 1000,
         "procStart": "4242",
-        "version": "2.1.294",
+        "version": "2.1.296",
         "peerProtocol": 1,
         "peerFeatures": ["notify_idle"],
         "kind": "interactive",
@@ -63,13 +63,13 @@ def test_warns_and_discovers_unverified_claude_version(
 ) -> None:
     sessions_dir = tmp_path / "sessions"
     proc_root = tmp_path / "proc"
-    write_session(sessions_dir, 123, version="2.1.295")
+    write_session(sessions_dir, 123, version="2.1.297")
     write_process(proc_root, 123, "4242", ["claude"])
 
     sessions = discover_live_sessions(sessions_dir, proc_root=proc_root)
 
     assert list(sessions) == ["yrrp-release-manager"]
-    assert "unverified Claude Code version 2.1.295; tested version is 2.1.294" in caplog.text
+    assert "unverified Claude Code version 2.1.297; tested version is 2.1.296" in caplog.text
 
 
 def test_rejects_unsupported_peer_protocol(tmp_path: Path) -> None:

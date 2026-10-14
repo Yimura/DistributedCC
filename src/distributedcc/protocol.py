@@ -9,6 +9,8 @@ from typing import Literal
 
 MAX_MESSAGE_BYTES = 256 * 1024
 MAX_BODY_BYTES = 240 * 1024
+SUPERSEDED_CLOSE_CODE = 4001
+SUPERSEDED_CLOSE_REASON = "replaced by newer connection"
 ADDRESS_PATTERN = r"(?:bridge|uds|did):[A-Za-z0-9%:_/.\\-]{1,200}"
 SESSION_PATTERN = r"[A-Za-z0-9_-]{1,80}"
 NAME_PATTERN = r'[^"<>\n\r]{1,64}'
@@ -57,6 +59,7 @@ class SessionAdvertisement:
 class PeerEvent:
     id: str
     source_session: str
+    source_mode: Literal["bypass", "prompting"]
     target_session: str
     body: str
 
@@ -64,6 +67,8 @@ class PeerEvent:
         if not UUID_RE.fullmatch(self.id):
             raise ProtocolError("invalid event id")
         _validate_identifier("source session", self.source_session)
+        if self.source_mode not in {"bypass", "prompting"}:
+            raise ProtocolError("invalid source mode")
         _validate_identifier("target session", self.target_session)
         if not self.body:
             raise ProtocolError("message body is empty")
@@ -131,7 +136,14 @@ def decode_client_message(raw: str) -> PeerEvent:
         raise ProtocolError("message must be an object")
     if value.get("type") != "route":
         raise ProtocolError("unsupported message type")
-    required = {"type", "id", "source_session", "target_session", "body"}
+    required = {
+        "type",
+        "id",
+        "source_session",
+        "source_mode",
+        "target_session",
+        "body",
+    }
     unknown = set(value) - required
     missing = required - set(value)
     if unknown:
@@ -143,6 +155,7 @@ def decode_client_message(raw: str) -> PeerEvent:
     return PeerEvent(
         id=value["id"],
         source_session=value["source_session"],
+        source_mode=value["source_mode"],
         target_session=value["target_session"],
         body=value["body"],
     )

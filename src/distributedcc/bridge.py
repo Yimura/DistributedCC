@@ -12,14 +12,19 @@ from pathlib import Path
 from typing import Literal
 
 from websockets.asyncio.client import ClientConnection, connect
+from websockets.exceptions import ConnectionClosed
 
 from distributedcc.protocol import (
     MAX_MESSAGE_BYTES,
+    SUPERSEDED_CLOSE_CODE,
     ProtocolError,
     build_peer_envelope,
 )
 from distributedcc.registry import LocalSession, discover_live_sessions
 from distributedcc.virtual_peer import RemoteSession, VirtualPeerSupervisor
+
+SESSION_POLL_SECONDS = 1.0
+STABLE_CONNECTION_SECONDS = 30.0
 
 DELIVERY_FIELDS = {
     "type",
@@ -29,6 +34,7 @@ DELIVERY_FIELDS = {
     "source_session_id",
     "source_mode",
     "target_session",
+    "target_session_id",
     "body",
 }
 
@@ -41,7 +47,12 @@ class Delivery:
     source_session_id: str
     source_mode: Literal["bypass", "prompting"]
     target_session: str
+    target_session_id: str
     body: str
+
+
+class BridgeSuperseded(RuntimeError):
+    """Raised when a newer bridge connection replaces this process."""
 
 
 def decode_presence(raw: str) -> list[RemoteSession]:
@@ -100,6 +111,7 @@ def decode_delivery(raw: str) -> Delivery:
         source_session_id=value["source_session_id"],
         source_mode=value["source_mode"],
         target_session=value["target_session"],
+        target_session_id=value["target_session_id"],
         body=value["body"],
     )
 
@@ -112,6 +124,8 @@ async def inject_delivery(
 ) -> None:
     if target.name != delivery.target_session:
         raise ProtocolError("delivery target does not match local session")
+    if target.session_id != delivery.target_session_id:
+        raise ProtocolError("delivery target generation does not match local session")
     content = build_peer_envelope(
         address=source_address,
         session_id=delivery.source_session_id,
@@ -170,11 +184,72 @@ class BridgeConfig:
         )
 
 
+@dataclass(slots=True)
+class LocalSessionState:
+    sessions: dict[str, LocalSession]
+
+
+async def _run_connection_tasks(
+    websocket: ClientConnection,
+    config: BridgeConfig,
+    supervisor: VirtualPeerSupervisor,
+) -> None:
+    local_state = LocalSessionState({})
+    tasks = (
+        asyncio.create_task(
+            _receive_loop(websocket, config, supervisor, local_state),
+            name="dcc-receiver",
+        ),
+        asyncio.create_task(_outbound_loop(websocket, supervisor), name="dcc-sender"),
+        asyncio.create_task(
+            _watch_local_sessions(websocket, config, local_state),
+            name="dcc-watcher",
+        ),
+    )
+    try:
+        _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+    except BaseException:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        raise
+
+    for task in pending:
+        task.cancel()
+    results = await asyncio.gather(*tasks, return_exceptions=True)
+    failures = [
+        result
+        for result in results
+        if isinstance(result, BaseException)
+        and not isinstance(result, asyncio.CancelledError)
+    ]
+    for failure in failures:
+        if (
+            isinstance(failure, ConnectionClosed)
+            and failure.rcvd is not None
+            and failure.rcvd.code == SUPERSEDED_CLOSE_CODE
+        ):
+            raise BridgeSuperseded from failure
+    if failures:
+        raise failures[0]
+    raise ConnectionError("broker connection closed")
+
+
+def _backoff_after_disconnect(
+    delay: float,
+    *,
+    connected_for: float,
+) -> tuple[float, float]:
+    retry_delay = 1.0 if connected_for >= STABLE_CONNECTION_SECONDS else delay
+    return retry_delay, min(retry_delay * 2, 30.0)
+
+
 async def run_bridge(config: BridgeConfig) -> None:
     supervisor = VirtualPeerSupervisor(config.sessions_dir, config.sockets_dir)
     delay = 1.0
     try:
         while True:
+            connected_at: float | None = None
             try:
                 async with connect(
                     config.server_url,
@@ -184,42 +259,65 @@ async def run_bridge(config: BridgeConfig) -> None:
                     ping_interval=20,
                     ping_timeout=20,
                 ) as websocket:
-                    delay = 1.0
-                    local_sessions = _selected_local_sessions(config)
-                    await _publish_sessions(websocket, local_sessions)
-                    receiver = asyncio.create_task(
-                        _receive_loop(websocket, config, supervisor),
-                        name="dcc-receiver",
-                    )
-                    sender = asyncio.create_task(
-                        _outbound_loop(websocket, supervisor),
-                        name="dcc-sender",
-                    )
-                    done, pending = await asyncio.wait(
-                        {receiver, sender}, return_when=asyncio.FIRST_EXCEPTION
-                    )
-                    for task in pending:
-                        task.cancel()
-                    await asyncio.gather(*pending, return_exceptions=True)
-                    for task in done:
-                        task.result()
+                    connected_at = asyncio.get_running_loop().time()
+                    await _run_connection_tasks(websocket, config, supervisor)
             except asyncio.CancelledError:
                 raise
-            except Exception as error:
-                logging.warning("bridge disconnected: %s; reconnecting in %.1fs", error, delay)
+            except BridgeSuperseded:
+                logging.error("bridge superseded by newer connection; waiting for restart")
                 supervisor.reconcile([])
-                await asyncio.sleep(delay)
-                delay = min(delay * 2, 30.0)
+                await asyncio.Future()
+            except Exception as error:
+                connected_for = 0.0
+                if connected_at is not None:
+                    connected_for = asyncio.get_running_loop().time() - connected_at
+                retry_delay, delay = _backoff_after_disconnect(
+                    delay,
+                    connected_for=connected_for,
+                )
+                logging.warning(
+                    "bridge disconnected: %s; reconnecting in %.1fs",
+                    error,
+                    retry_delay,
+                )
+                supervisor.reconcile([])
+                await asyncio.sleep(retry_delay)
     finally:
         supervisor.stop()
 
 
-def _selected_local_sessions(config: BridgeConfig) -> dict[str, LocalSession]:
+def _discover_selected_sessions(config: BridgeConfig) -> dict[str, LocalSession]:
     discovered = discover_live_sessions(config.sessions_dir)
-    missing = set(config.publish_names) - set(discovered)
-    if missing:
-        raise RuntimeError(f"configured sessions are not live: {', '.join(sorted(missing))}")
-    return {name: discovered[name] for name in config.publish_names}
+    return {
+        name: discovered[name]
+        for name in config.publish_names
+        if name in discovered
+    }
+
+
+def _snapshot_key(sessions: dict[str, LocalSession]) -> tuple[tuple[str, str, str], ...]:
+    return tuple(
+        sorted(
+            (session.name, session.session_id, session.permission_mode)
+            for session in sessions.values()
+        )
+    )
+
+
+async def _watch_local_sessions(
+    websocket: ClientConnection,
+    config: BridgeConfig,
+    local_state: LocalSessionState,
+) -> None:
+    previous: tuple[tuple[str, str, str], ...] | None = None
+    while True:
+        sessions = _discover_selected_sessions(config)
+        current = _snapshot_key(sessions)
+        if current != previous:
+            local_state.sessions = sessions
+            await _publish_sessions(websocket, sessions)
+            previous = current
+        await asyncio.sleep(SESSION_POLL_SECONDS)
 
 
 async def _publish_sessions(
@@ -234,7 +332,7 @@ async def _publish_sessions(
                 "session_id": session.session_id,
                 "mode": session.permission_mode,
             }
-            for session in sessions.values()
+            for session in sorted(sessions.values(), key=lambda item: item.name)
         ],
     }
     await websocket.send(json.dumps(message, separators=(",", ":")))
@@ -244,6 +342,7 @@ async def _receive_loop(
     websocket: ClientConnection,
     config: BridgeConfig,
     supervisor: VirtualPeerSupervisor,
+    local_state: LocalSessionState,
 ) -> None:
     async for raw in websocket:
         if not isinstance(raw, str):
@@ -255,10 +354,25 @@ async def _receive_loop(
             continue
         if message_type == "deliver":
             delivery = decode_delivery(raw)
-            targets = _selected_local_sessions(config)
-            target = targets.get(delivery.target_session)
-            if target is None:
-                raise ProtocolError("delivery target is not published locally")
+            published_target = local_state.sessions.get(delivery.target_session)
+            target = _discover_selected_sessions(config).get(delivery.target_session)
+            if published_target is None or target is None:
+                logging.warning(
+                    "dropping delivery %s: local target %s is unavailable",
+                    delivery.id,
+                    delivery.target_session,
+                )
+                continue
+            if (
+                published_target.session_id != delivery.target_session_id
+                or target.session_id != delivery.target_session_id
+            ):
+                logging.warning(
+                    "dropping delivery %s: local target %s generation is unavailable",
+                    delivery.id,
+                    delivery.target_session,
+                )
+                continue
             source_address = supervisor.address_for(delivery.source_session)
             if source_address is None:
                 raise ProtocolError("delivery source has no local virtual peer")
@@ -282,6 +396,7 @@ async def _outbound_loop(
             "type": "route",
             "id": str(uuid.uuid4()),
             "source_session": outbound["source_session"],
+            "source_mode": outbound["source_mode"],
             "target_session": outbound["target_session"],
             "body": outbound["body"],
         }

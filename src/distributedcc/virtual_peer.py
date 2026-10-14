@@ -32,7 +32,7 @@ NATIVE_ENVELOPE_RE = re.compile(
     rf'(?: from-session="{SESSION_PATTERN}")?'
     r'(?: hop-chain="[0-9a-f]{24}(?:,[0-9a-f]{24}){0,31}")?'
     r'(?: from-name="[^"<>\n\r]+")?'
-    r'(?: from-mode="(?:bypass|prompting)")?'
+    r'(?: from-mode="(?P<mode>bypass|prompting)")?'
     r'(?: from-plugin="[^"<>\n\r]+")?>\n'
     r'(?P<body>[\s\S]*)\n</cross-session-message>$'
 )
@@ -44,6 +44,12 @@ class RemoteSession:
     session_id: str
     node: str
     permission_mode: Literal["bypass", "prompting"]
+
+
+@dataclass(frozen=True, slots=True)
+class NativeSend:
+    body: str
+    source_mode: Literal["bypass", "prompting"]
 
 
 def build_session_record(
@@ -75,7 +81,7 @@ def build_session_record(
     }
 
 
-def decode_native_send(raw: str) -> str:
+def decode_native_send(raw: str) -> NativeSend:
     if len(raw.encode()) > MAX_MESSAGE_BYTES:
         raise ProtocolError("native frame is too large")
     try:
@@ -92,7 +98,10 @@ def decode_native_send(raw: str) -> str:
     envelope = NATIVE_ENVELOPE_RE.fullmatch(message["content"])
     if envelope is None:
         raise ProtocolError("peer envelope is not canonical")
-    return envelope.group("body")
+    return NativeSend(
+        body=envelope.group("body"),
+        source_mode=envelope.group("mode") or "prompting",
+    )
 
 
 class VirtualPeerProcess:
@@ -259,7 +268,7 @@ def _handle_connection(
         logging.debug("virtual peer probe closed without a frame from %s", source.name)
         return
     try:
-        body = decode_native_send(raw)
+        native_send = decode_native_send(raw)
     except ProtocolError as error:
         opening = _opening_envelope_tag(raw)
         logging.warning(
@@ -272,8 +281,9 @@ def _handle_connection(
     outbound.put(
         {
             "source_session": source.name,
+            "source_mode": native_send.source_mode,
             "target_session": remote.name,
-            "body": body,
+            "body": native_send.body,
         }
     )
     logging.info("virtual peer routed %s to %s", source.name, remote.name)

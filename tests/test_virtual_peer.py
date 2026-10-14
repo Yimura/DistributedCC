@@ -7,6 +7,7 @@ import pytest
 
 from distributedcc.protocol import ProtocolError, build_peer_envelope
 from distributedcc.virtual_peer import (
+    NativeSend,
     RemoteSession,
     VirtualPeerProcess,
     build_session_record,
@@ -33,7 +34,7 @@ def test_builds_discoverable_transient_session_record(tmp_path: Path) -> None:
     assert record["pid"] == 123
     assert record["name"] == "yrrp-release-manager"
     assert record["sessionId"] == "manager-session"
-    assert record["version"] == "2.1.294"
+    assert record["version"] == "2.1.296"
     assert record["peerProtocol"] == 1
     assert record["messagingSocketPath"] == str(tmp_path / "123.sock")
 
@@ -54,10 +55,10 @@ def test_decodes_native_send_without_trusting_claimed_identity() -> None:
         }
     )
 
-    assert decode_native_send(frame) == "FEATURE_READY"
+    assert decode_native_send(frame) == NativeSend("FEATURE_READY", "bypass")
 
 
-def test_decodes_native_send_without_optional_from_session() -> None:
+def test_decodes_native_send_without_mode_as_prompting() -> None:
     frame = json.dumps(
         {
             "type": "user",
@@ -65,7 +66,7 @@ def test_decodes_native_send_without_optional_from_session() -> None:
                 "role": "user",
                 "content": (
                     '<cross-session-message from="uds:/run/user/1000/cc-socks/111.sock" '
-                    'from-name="feature-owner" from-mode="bypass">\n'
+                    'from-name="feature-owner">\n'
                     "hello\n"
                     "</cross-session-message>"
                 ),
@@ -73,7 +74,7 @@ def test_decodes_native_send_without_optional_from_session() -> None:
         }
     )
 
-    assert decode_native_send(frame) == "hello"
+    assert decode_native_send(frame) == NativeSend("hello", "prompting")
 
 
 def test_rejects_non_user_native_frame() -> None:
